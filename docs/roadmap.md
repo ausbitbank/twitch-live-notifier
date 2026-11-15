@@ -159,24 +159,6 @@ Acceptance criteria:
 - Filter settings are visible and editable per streamer.
 - Unit tests cover include/exclude precedence.
 
-### P1: Installer, signing, and auto-update
-
-Deliverables:
-
-- Windows installer (Inno Setup, MSIX, or similar) and portable ZIP.
-- Code-signing certificate for the Windows executable.
-- winget manifest.
-- macOS `.app`/menu-bar wrapper and notarization.
-- Linux AppImage/deb package.
-- GitHub-release update check and optional auto-update.
-
-Acceptance criteria:
-
-- A non-technical Windows user can install, launch, and find the tray icon.
-- SmartScreen warnings disappear when signed.
-- An update can be installed without losing settings.
-- The app reports its version and update status.
-
 ## v2.3 — Stream lifecycle and message power
 
 Goal: match the most visible notification features competitors offer.
@@ -249,7 +231,36 @@ backups, restore-from-UI, and an optional dashboard token are live.
 - Optional local dashboard PIN/token.
 - Backup/restore settings from the UI.
 
-## v2.4 / v3.0 — Reach and advanced modes
+## v2.4 — Packaging, signing, and updates
+
+Goal: make installation and upgrades feel like a normal desktop app instead of a
+downloaded binary.
+
+### P1: Installer, signing, and auto-update
+
+**Implemented on `main`; release pending.** Packaging scripts, update checks,
+and optional signing hooks are in place. Signed public artifacts require
+repository signing secrets.
+
+Deliverables:
+
+- Windows installer (Inno Setup) plus the portable ZIP.
+- Optional code-signing hooks for the Windows executable and installer.
+- winget manifest template/generator.
+- macOS `.app` bundle and optional notarization hooks.
+- Linux `.deb` and AppImage packages.
+- GitHub-release update check with version status and a download link.
+- Optional self-replacing auto-update after signed builds are available.
+
+Acceptance criteria:
+
+- A non-technical Windows user can install, launch, and find the tray icon.
+- SmartScreen warnings disappear when signed.
+- An update can be installed without losing settings.
+- The app reports its version and update status.
+- Unsigned development builds still build, test, and release.
+
+## v3.0 — Reach and advanced modes
 
 ### P2: Optional official Twitch API mode
 
@@ -323,9 +334,12 @@ This must be a separate opt-in mode with OAuth and clear permission scopes.
 - ~~Add integration tests for multi-destination, retries, filters, cleanup, and
   role mentions.~~ Multi-destination, retries, filters, lifecycle/cleanup, and
   role mentions are covered.
-- Expand committed Playwright UI tests for onboarding, settings, and failure
-  states. A dashboard smoke pass now covers editors, lifecycle controls, route
-  templates, and settings.
+- Expand committed Playwright UI tests for onboarding, settings, updates, and
+  failure states. Dashboard smoke passes now cover editors, lifecycle controls,
+  route templates, settings, update checks, and the dashboard token prompt.
+- ~~Add release packaging and signed-artifact hooks.~~ Windows installer, winget
+  manifests, macOS `.app`, Linux `.deb`/AppImage, and optional signing hooks are
+  in place on `main`.
 - Keep `go vet` for Windows/Linux/macOS and race tests in CI.
 - Evaluate code signing and reproducible builds before a wider launch.
 

@@ -157,6 +157,7 @@ type Settings struct {
 	StartAtLogin       bool   `json:"start_at_login"`
 	Paused             bool   `json:"paused"`
 	Theme              string `json:"theme"`
+	DisableUpdateCheck bool   `json:"disable_update_check,omitempty"`
 	DashboardTokenHash string `json:"dashboard_token_hash,omitempty"`
 }
 

@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Twitch Live to Discord
+Comment=Twitch live alerts for labelled Discord webhooks
+Exec=twitch-live-notifier-launch
+Icon=twitch-live-notifier
+Terminal=false
+Categories=Network;InstantMessaging;
+Keywords=twitch;discord;stream;live;alerts;
+StartupNotify=false

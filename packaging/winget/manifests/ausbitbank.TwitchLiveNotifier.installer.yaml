@@ -1,0 +1,23 @@
+PackageIdentifier: ausbitbank.TwitchLiveNotifier
+PackageVersion: __VERSION__
+InstallerLocale: en-US
+Platform:
+  - Windows.Desktop
+MinimumOSVersion: 10.0.0.0
+InstallerType: inno
+Scope: user
+InstallModes:
+  - interactive
+  - silent
+  - silentWithProgress
+InstallerSwitches:
+  Silent: /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP-
+  SilentWithProgress: /SILENT /SUPPRESSMSGBOXES /NORESTART /SP-
+UpgradeBehavior: install
+ReleaseNotesUrl: https://github.com/ausbitbank/twitch-live-notifier/releases/tag/v__VERSION__
+Installers:
+  - Architecture: x64
+    InstallerUrl: https://github.com/ausbitbank/twitch-live-notifier/releases/download/v__VERSION__/TwitchLiveNotifier-v__VERSION__-Windows-x64-Setup.exe
+    InstallerSha256: __SHA256__
+ManifestType: installer
+ManifestVersion: 1.6.0

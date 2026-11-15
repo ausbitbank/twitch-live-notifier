@@ -9,6 +9,8 @@ context.
 - **GitHub:** <https://github.com/ausbitbank/twitch-live-notifier>
 - **Current version:** 2.3.0
 - **Current release:** <https://github.com/ausbitbank/twitch-live-notifier/releases/tag/v2.3.0>
+- **Unreleased on main:** packaging (Windows installer, macOS `.app`, Linux
+  `.deb`/AppImage, winget) and the GitHub update check.
 - **Branch:** `main`
 - **License:** MIT
 
@@ -36,6 +38,8 @@ Core promises:
 - Local-first privacy: dashboard and settings run on `127.0.0.1`.
 - Windows tray app; Linux/macOS dashboard mode (`--serve`).
 - Docker/self-host mode with `/healthz` and multi-arch images.
+- Release packaging for Windows, macOS, Linux, and Docker, with an in-app
+  GitHub-release update check.
 
 ## Stack
 
@@ -58,6 +62,7 @@ Core promises:
 | `secret_windows.go` | Windows DPAPI protect/unprotect |
 | `secret_config.go` | Resolve/encrypt config secrets, redacted export/import |
 | `auth.go` | Optional dashboard token hashing and API middleware |
+| `update.go` | Cached GitHub-release update check, version comparison, asset selection |
 | `filters.go` | Per-streamer filter normalization, validation, and evaluation |
 | `health.go` | `/healthz` payload, monitor liveness rules, healthcheck CLI probe |
 | `retry.go` | Exponential backoff with jitter and context-aware retry sleeps |
@@ -75,11 +80,15 @@ Core promises:
 | `Dockerfile` | Multi-stage amd64/arm64 image with healthcheck |
 | `docker-compose.yml` | Persistent volume, loopback port, timezone, restart policy |
 | `winres/` | Icon PNGs and Windows version/manifest source |
-| `docs/` | Screenshots, Docker guide, competitive research, roadmap, this hand-off |
+| `docs/` | Screenshots, Docker/signing guides, competitive research, roadmap, this hand-off |
+| `packaging/windows/` | Inno Setup script, installer/signing PowerShell |
+| `packaging/macos/` | `.app` bundle, launcher, Info.plist, sign/notarize script |
+| `packaging/linux/` | `.deb`, AppImage, desktop entry, systemd user service |
+| `packaging/winget/` | winget manifest templates and renderer |
 | `build.sh` | Cross-compile Windows from Linux/macOS |
 | `build.ps1` | Windows PowerShell build |
 | `build-linux.sh` | Native Linux dashboard binary |
-| `build-macos.sh` | Intel + Apple Silicon macOS dashboard binaries |
+| `build-macos.sh` | macOS dashboard binaries plus `.app` bundles |
 | `tools/generate-resources.sh` | Regenerate icons, web artwork, `.syso` |
 
 ## Current runtime behavior
@@ -110,7 +119,9 @@ Core promises:
   URL changes or a test succeeds. Other destinations keep working.
 - Config is saved after profile changes, successful posts, live edits, cleanup,
   and settings changes.
-- Windows runs in the tray; Linux/macOS run the dashboard in the foreground.
+- Windows runs in the tray. Linux/macOS with no arguments (including the macOS
+  `.app` bundle and Linux desktop launcher) start the dashboard and open the
+  browser; `--serve` runs the dashboard in the foreground service mode.
 - Optional streamer Discord ID renders `{discord_mention}` as `<@id>`.
 - Optional destination role IDs render `{role_mentions}` as `<@&id>`.
 - `allowed_mentions` always includes an explicit `parse` list; `users` and
@@ -124,6 +135,10 @@ Core promises:
   or a 0600 `secret.key` fallback. Redacted backups omit URLs; with-secrets
   backups include them.
 - An optional dashboard token protects `/api/*`; `/healthz` remains public.
+- The app checks the latest GitHub release after startup and every 24 hours when
+  enabled. Results are cached; the Settings card shows current/latest versions,
+  release notes, and a direct download. It never replaces its own binary.
+- Update checks can be disabled in Settings; the app still works offline.
 - Per-streamer filters evaluate game/title rules, minimum viewers, delay,
   quiet hours, allowed days, cooldown, and first-stream-of-day. Excludes win.
 - Filtered streams still update live status and do not record dedupe.
@@ -149,6 +164,7 @@ Core promises:
 - `GET /api/config/export` (redacted by default, `?secrets=1` for full).
 - `POST /api/config/import` (restore backup).
 - `PUT /api/dashboard-token` (set or clear the optional API token).
+- `GET /api/updates` (cached status), `POST /api/updates/check` (manual check).
 - `POST /api/check`, `PUT /api/settings`, `/api/open-data-folder`, `/api/quit`.
 - Browser dashboard at `http://127.0.0.1:8787/` (falls back to the next port).
   `--listen` binds an explicit address; Docker uses `0.0.0.0:8787` internally.
@@ -176,9 +192,16 @@ go test -race ./...
 # Builds
 ./build.sh          # Windows exe into dist/
 ./build-linux.sh    # Linux dashboard binary
-./build-macos.sh    # macOS Intel + Apple Silicon binaries
+./build-macos.sh    # macOS Intel + Apple Silicon binaries and .app bundles
 docker build -t twitch-live-notifier .
 docker compose up -d --build
+
+# Packages
+./packaging/linux/build-deb.sh <version>
+APPIMAGETOOL=/path/to/appimagetool ./packaging/linux/build-appimage.sh <version>
+./packaging/macos/build-app.sh <version> <amd64|arm64>
+./packaging/windows/build-installer.ps1 -Version <version>   # on Windows
+./packaging/winget/render.sh <version> <installer.exe>
 ```
 
 Local artifacts are written under `dist/` and are ignored by Git.
@@ -207,10 +230,16 @@ TwitchLiveNotifier.exe --healthcheck
   - runs tests,
   - installs `go-winres`,
   - builds Windows, Linux, and macOS binaries,
-  - creates Windows ZIP, Linux tar.gz, macOS tar.gz,
-  - uploads raw binaries plus archives and `SHA256SUMS.txt`,
+  - builds Linux `.deb` and AppImage packages,
+  - builds macOS `.app` bundles,
+  - creates Windows ZIP, Linux tar.gz, macOS tar.gz, and `SHA256SUMS.txt`,
+  - uploads raw binaries, packages, archives, and checksums,
+  - builds the Windows installer, winget manifests, and signed Windows artifacts
+    on a Windows runner,
+  - optionally signs/notarizes macOS artifacts when secrets are configured,
   - builds and pushes `linux/amd64` + `linux/arm64` images to GHCR.
-- Current tag: `v2.3.0`.
+- Current tag: `v2.3.0`; packaging/update-check work is on `main` for the next
+  release.
 
 ## Known constraints
 
@@ -221,7 +250,10 @@ TwitchLiveNotifier.exe --healthcheck
 - All platforms prevent multiple instances per settings file.
 - Webhook URLs are encrypted at rest where a keyring is available. Without a
   keyring, the fallback key file is only as private as the settings folder.
-- Windows binary is unsigned.
+- Windows and macOS artifacts are unsigned unless the release signing secrets are
+  configured.
+- Windows installer, portable ZIP, Linux `.deb`/AppImage, macOS `.app`, and
+  update checks are implemented. Silent self-replacing auto-update is not.
 - The dashboard has no authentication by default. It can be protected with an
   optional dashboard token, but it should still stay on loopback or behind an
   authenticating reverse proxy when exposed.
@@ -256,9 +288,11 @@ We are continuing work on Twitch Live to Discord at
 docs/competitive-research.md, and docs/roadmap.md first. The current release is
 v2.3.0 on main.
 
-Start with the v2.3 P1 roadmap item: stream-end cleanup and message updates.
-Then continue through live message updates, per-route templates, thread targets,
-and secret storage as time allows.
+Work on the P1 installer, signing, and auto-update slice: Windows installer and
+portable ZIP, optional Windows/macOS signing hooks, winget manifests, macOS
+.app bundle, Linux .deb/AppImage packages, and the GitHub-release update check.
+Signing credentials are repository secrets, so unsigned builds and checks must
+keep passing when the secrets are absent.
 
 Before coding, restate the acceptance criteria and make a short implementation
 plan. Preserve the core behavior: no bot/OAuth required, multi-streamer and
@@ -268,7 +302,6 @@ blocked @everyone/roles unless explicitly configured.
 
 Implement one slice at a time. Add/update tests, run go test ./..., go vet for
 Linux and Windows, and race tests. Run UI/Playwright smoke tests where relevant.
-Update README, CHANGELOG, and docs. Commit and push to main. If all checks pass,
-tag and release v2.3.0 and verify the GitHub release assets, checksums, and
-multi-arch GHCR images.
+Update README, CHANGELOG, and docs. Commit and push to main. Tag and release only
+after all checks and published assets are verified.
 ```

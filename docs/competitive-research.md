@@ -68,7 +68,7 @@ generic bot; **No** = not a core feature.
 | Cloud 24/7 uptime | Yes | Yes | Yes | No | **Self-host/Docker** |
 | Persisted per-stream dedupe | Assumed | Assumed | Not guaranteed | Manual/action-dependent | **Yes, persisted** |
 | Free without streamer limits | No (5 free) | Yes-ish | Task limits | Yes | **Yes** |
-| Installer/polish for non-technical users | Yes | Dashboard | Yes | Desktop app | Partial |
+| Installer/polish for non-technical users | Yes | Dashboard | Yes | Desktop app | **Yes, with signed-release setup optional** |
 
 ## Where our app already wins
 
@@ -118,7 +118,8 @@ app around the clock.
 Remaining opportunity:
 
 - Optional external heartbeat alerting.
-- Service installers for Windows/Linux/macOS.
+- Native service-management UI (the Linux deb ships a systemd user unit; Windows
+  and macOS launchers are packaged but still use the app's own startup toggle).
 
 ### 2. Real-time or more reliable Twitch detection
 
@@ -174,10 +175,13 @@ buttons, redacted backups, and encrypted webhook URLs.
 
 A public utility needs lower-friction installation and updates:
 
-- Windows installer, code signing, winget.
-- macOS `.app`/menu-bar wrapper and notarization.
-- Linux AppImage/deb and a native tray.
-- Auto-update from GitHub releases.
+- ~~Windows installer and winget manifests.~~ Implemented on `main`; signing is
+  optional through repository secrets.
+- ~~macOS `.app` wrapper.~~ Implemented on `main`; signing/notarization are
+  optional through repository secrets.
+- ~~Linux AppImage/deb.~~ Implemented on `main`.
+- ~~Auto-update check from GitHub releases.~~ Implemented on `main` as a status
+  check plus download link; silent self-replacement waits for signed artifacts.
 - ~~Encrypt webhook URLs with DPAPI/Keychain/libsecret.~~ Delivered in 2.3.0.
 - ~~Optional local dashboard PIN/token for local-network access.~~ Delivered in
   2.3.0.
@@ -228,7 +232,7 @@ simplicity, message control, multi-destination routing, privacy, and reliability
 
 The most valuable next steps are:
 
-1. Installer/signing/auto-update.
+1. Obtain Windows/macOS signing certificates and roll out signed installers.
 2. Official Twitch API/Helix mode.
 3. YouTube/Kick and Twitch Teams.
 4. Optional bot mode for live roles and schedule sync.

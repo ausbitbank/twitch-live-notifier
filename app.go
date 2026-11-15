@@ -49,6 +49,7 @@ type State struct {
 	DefaultTemplate       Template                 `json:"default_template"`
 	DefaultEndedTemplate  Template                 `json:"default_ended_template"`
 	DashboardTokenSet     bool                     `json:"dashboard_token_set"`
+	Update                UpdateStatus             `json:"update"`
 }
 
 type CheckSummary struct {
@@ -72,6 +73,7 @@ type App struct {
 	cancel          context.CancelFunc
 	onQuit          func()
 	enableAutoCheck bool
+	updateStatus    UpdateStatus
 }
 
 func NewApp(configPath string) (*App, error) {
@@ -113,6 +115,9 @@ func (a *App) Start(ctx context.Context) {
 	}
 
 	go a.monitorLoop()
+	if a.ctx != nil {
+		go a.updateLoop(a.ctx)
+	}
 	go func() {
 		select {
 		case <-time.After(1500 * time.Millisecond):
@@ -776,7 +781,11 @@ func (a *App) State() State {
 	checking := a.checking
 	lastCheck := a.lastCheck
 	dataDir := filepath.Dir(a.configPath)
+	update := a.updateStatus
 	a.mu.RUnlock()
+	if update.CurrentVersion == "" {
+		update.CurrentVersion = Version
+	}
 
 	lastCheckText := ""
 	if !lastCheck.IsZero() {
@@ -798,6 +807,7 @@ func (a *App) State() State {
 		DefaultTemplate:       defaultTemplate(),
 		DefaultEndedTemplate:  defaultEndedTemplate(),
 		DashboardTokenSet:     dashboardTokenSet,
+		Update:                update,
 	}
 }
 

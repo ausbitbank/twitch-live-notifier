@@ -662,8 +662,27 @@
       </article>`;
   }
 
+  function renderUpdateStatus(update) {
+    const current = escapeHTML(update.current_version || state.version);
+    if (update.disabled) {
+      return { html: `<div class="meta">Update checks are off. You are on version <strong>${current}</strong>.</div>` };
+    }
+    if (update.error) {
+      return { html: `<div class="warning-box">${icon("bell")} <span>Could not check for updates: ${escapeHTML(update.error)}</span></div>` };
+    }
+    if (update.update_available) {
+      return { html: `<div class="warning-box">${icon("download")} <span>Version <strong>${escapeHTML(update.latest_version)}</strong> is available. You are on <strong>${current}</strong>. Installed settings are preserved when you upgrade.</span></div>` };
+    }
+    if (update.latest_version) {
+      return { html: `<div class="meta">You are on the latest version, <strong>${current}</strong>${update.checked_at ? ` · checked ${escapeHTML(formatRelative(update.checked_at))}` : ""}.</div>` };
+    }
+    return { html: `<div class="meta">You are on version <strong>${current}</strong>. No update check has run yet.</div>` };
+  }
+
   function renderSettings() {
     const settings = state.config.settings;
+    const update = state.update || { current_version: state.version };
+    const updateStatus = renderUpdateStatus(update);
     const intervals = [60, 120, 300, 600, 900, 1800];
     if (!intervals.includes(settings.poll_seconds)) {
       intervals.push(settings.poll_seconds);
@@ -709,6 +728,10 @@
                   <label class="switch"><input id="settings-paused" type="checkbox" ${settings.paused ? "checked" : ""}><span class="switch-track"></span></label>
                 </div>
                 ${startAtLogin}
+                <div class="switch-row">
+                  <div class="switch-copy"><strong>Check GitHub for updates</strong><span>The app never auto-downloads a release. It only reports the latest version.</span></div>
+                  <label class="switch"><input id="settings-update-check" type="checkbox" ${settings.disable_update_check ? "" : "checked"}><span class="switch-track"></span></label>
+                </div>
               </div>
               <div class="settings-actions">
                 <button class="btn btn-primary" type="submit">${icon("check")} Save settings</button>
@@ -729,6 +752,17 @@
                 <input id="config-import" type="file" accept="application/json,.json" style="display:none">
               </div>
               <div class="settings-actions">${windowsTools}<button class="btn btn-danger" data-action="quit-app">${icon("power")} Quit app</button></div>
+            </div>
+          </section>
+          <section class="card" style="margin-top:16px">
+            <div class="card-head"><div><h3>Updates</h3><p>Version status from GitHub releases.</p></div></div>
+            <div class="card-body">
+              <div class="update-status">${updateStatus.html}</div>
+              <div class="settings-actions">
+                <button class="btn btn-ghost" data-action="check-updates" ${update.disabled ? "disabled" : ""}>${icon("refresh")} Check now</button>
+                ${update.update_available && update.download_url ? `<a class="btn btn-primary" href="${escapeHTML(safeURL(update.download_url))}" target="_blank" rel="noopener">${icon("download")} Download ${escapeHTML(update.latest_version || "update")}</a>` : ""}
+                ${update.release_url ? `<a class="btn btn-ghost" href="${escapeHTML(safeURL(update.release_url))}" target="_blank" rel="noopener">${icon("external")} Release notes</a>` : ""}
+              </div>
             </div>
           </section>
           <section class="card" style="margin-top:16px">
@@ -2014,6 +2048,7 @@ function openSampleModal(channelId) {
           poll_seconds: state.config.settings.poll_seconds,
           start_at_login: state.config.settings.start_at_login,
           paused: state.config.settings.paused,
+          disable_update_check: state.config.settings.disable_update_check,
           theme,
         },
       });
@@ -2197,6 +2232,28 @@ function openSampleModal(channelId) {
         break;
       case "sample-channel":
         openSampleModal(actionElement.dataset.channel);
+        break;
+      case "check-updates":
+        actionElement.disabled = true;
+        actionElement.innerHTML = '<span class="spinner dark"></span> Checking…';
+        try {
+          const result = await api("/api/updates/check", { method: "POST", body: {} });
+          if (state) {
+            state.update = result;
+            render();
+          }
+          if (result.error) {
+            toast(result.error, "error");
+          } else if (result.update_available) {
+            toast(`Version ${result.latest_version} is available.`, "success");
+          } else {
+            toast("You are on the latest version.", "success");
+          }
+        } catch (error) {
+          toast(error.message, "error");
+          actionElement.disabled = false;
+          actionElement.innerHTML = `${icon("refresh")} Check now`;
+        }
         break;
       case "open-data-folder":
         try {
@@ -2384,10 +2441,14 @@ function openSampleModal(channelId) {
             poll_seconds: Number($("#settings-interval").value),
             paused: $("#settings-paused").checked,
             start_at_login: $("#settings-startup") ? $("#settings-startup").checked : false,
+            disable_update_check: !($("#settings-update-check") ? $("#settings-update-check").checked : true),
             theme: $("#settings-theme").value,
           },
         });
         applyTheme(state.config.settings.theme);
+        if (state.update) {
+          state.update.disabled = Boolean(state.config.settings.disable_update_check);
+        }
         render();
         toast("Settings saved.", "success");
       } catch (error) {

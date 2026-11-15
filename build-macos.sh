@@ -2,6 +2,7 @@
 set -euo pipefail
 cd -- "$(dirname -- "$0")"
 
+version="${VERSION:-$(sed -n 's/.*Version = "\(.*\)"/\1/p' version.go)}"
 mkdir -p dist
 
 for arch in amd64 arm64; do
@@ -10,6 +11,7 @@ for arch in amd64 arm64; do
 		-buildvcs=false \
 		-ldflags="-s -w" \
 		-o "dist/TwitchLiveNotifier-macos-${arch}" .
+	./packaging/macos/build-app.sh "$version" "$arch" "dist/TwitchLiveNotifier-macos-${arch}" >/dev/null
 done
 
-ls -lh dist/TwitchLiveNotifier-macos-*
+ls -lh dist/TwitchLiveNotifier-macos-* dist/macos-*/*.app/Contents/MacOS/twitch-live-notifier

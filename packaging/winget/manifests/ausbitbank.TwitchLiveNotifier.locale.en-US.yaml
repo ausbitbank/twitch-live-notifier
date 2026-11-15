@@ -1,0 +1,21 @@
+PackageIdentifier: ausbitbank.TwitchLiveNotifier
+PackageVersion: __VERSION__
+PackageLocale: en-US
+Publisher: ausbitbank
+PublisherUrl: https://github.com/ausbitbank
+PublisherSupportUrl: https://github.com/ausbitbank/twitch-live-notifier/issues
+PackageName: Twitch Live to Discord
+PackageUrl: https://github.com/ausbitbank/twitch-live-notifier
+License: MIT
+LicenseUrl: https://github.com/ausbitbank/twitch-live-notifier/blob/main/LICENSE
+ShortDescription: Twitch live alerts for labelled Discord webhooks.
+Description: A local dashboard and monitor that posts Twitch live alerts to one or more Discord webhooks. No bot, OAuth, or Twitch API registration is required. Supports multiple streamers and destinations, per-destination and per-route templates, mention controls, filters, stream-end cleanup, and encrypted webhook secrets.
+Moniker: twitch-live-notifier
+Tags:
+  - twitch
+  - discord
+  - notifications
+  - streaming
+ReleaseNotesUrl: https://github.com/ausbitbank/twitch-live-notifier/releases/tag/v__VERSION__
+ManifestType: defaultLocale
+ManifestVersion: 1.6.0

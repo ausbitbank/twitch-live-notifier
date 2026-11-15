@@ -1,0 +1,13 @@
+[Unit]
+Description=Twitch Live to Discord dashboard
+Documentation=https://github.com/ausbitbank/twitch-live-notifier
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=/usr/bin/twitch-live-notifier --serve
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

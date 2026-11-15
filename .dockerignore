@@ -15,10 +15,11 @@ secret.key
 server.port
 instance.lock
 
-# Documentation artwork is not needed in the image
+# Documentation, artwork, and release packaging are not needed in the image
 assets
 winres
 docs
+packaging
 README.md
 CHANGELOG.md
 SECURITY.md

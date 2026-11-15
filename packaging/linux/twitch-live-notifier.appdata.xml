@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>com.ausbitbank.twitchlivenotifier</id>
+  <name>Twitch Live to Discord</name>
+  <summary>Twitch live alerts for labelled Discord webhooks</summary>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT</project_license>
+  <description>
+    <p>
+      A local dashboard and monitor that posts Twitch live alerts to one or more
+      labelled Discord webhooks. No bot, OAuth, or Twitch API registration is
+      required.
+    </p>
+    <p>
+      Supports multiple streamers and destinations, per-destination and
+      per-route templates, scoped mentions, filters, stream-end cleanup, and
+      encrypted webhook secrets.
+    </p>
+  </description>
+  <launchable type="desktop-id">twitch-live-notifier.desktop</launchable>
+  <url type="homepage">https://github.com/ausbitbank/twitch-live-notifier</url>
+  <url type="bugtracker">https://github.com/ausbitbank/twitch-live-notifier/issues</url>
+  <releases>
+    <release version="__VERSION__" date="2026-11-16"/>
+  </releases>
+</component>

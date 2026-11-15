@@ -172,8 +172,11 @@ Settings are stored in:
 	return fmt.Sprintf(`%s v%s
 
 Usage:
+  %s
+      Start the dashboard and open the browser.
+
   %s --serve
-      Run the dashboard in the foreground. Open the printed URL.
+      Run the dashboard in the foreground without opening a browser.
 
   %s --check
       Check every streamer once, post any pending alerts, and exit.
@@ -189,5 +192,5 @@ Options:
   --help, -h             Show this help.
 
 Settings are stored in:
-  %s`, appName, Version, exe, exe, exe, settingsPath)
+  %s`, appName, Version, exe, exe, exe, exe, settingsPath)
 }

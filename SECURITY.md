@@ -26,6 +26,13 @@ explicit action and includes live webhook URLs; treat that file like a password.
 Restoring a redacted backup marks each destination invalid until its URL is
 re-entered.
 
+## Update checks
+
+When update checks are enabled (the default), the app requests the latest
+release metadata from `api.github.com`. It sends no settings, webhook URLs, or
+streamer data. Disable the check in Settings if you do not want that outbound
+request. The app never silently downloads or replaces its own binary.
+
 ## Dashboard token
 
 An optional dashboard token can be set under Settings. When present, `/api/*`

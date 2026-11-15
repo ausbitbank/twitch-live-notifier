@@ -5,7 +5,6 @@ package main
 import (
 	"errors"
 	"fmt"
-	"os"
 	"os/exec"
 )
 
@@ -36,7 +35,11 @@ func showMessage(title, text string, _ bool) {
 
 func prepareConsole() {}
 
-func runDesktop(_ string, _ error, _ bool) int {
-	fmt.Fprintln(os.Stderr, "The tray app is only available on Windows. Use --serve for the local dashboard.")
-	return 1
+func runDesktop(configPath string, pathErr error, openDashboard bool) int {
+	if pathErr != nil {
+		return cliError(pathErr)
+	}
+	// Linux and macOS use the same dashboard as --serve, but a no-argument
+	// launch also opens the browser. Windows has its own tray implementation.
+	return runServerMode(configPath, "", openDashboard)
 }

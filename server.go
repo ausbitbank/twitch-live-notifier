@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -92,6 +93,10 @@ func (s *dashboardServer) Shutdown(ctx context.Context) {
 }
 
 func runServerOnly(configPath, listen string) int {
+	return runServerMode(configPath, listen, false)
+}
+
+func runServerMode(configPath, listen string, openDashboard bool) int {
 	prepareConsole()
 	release, alreadyRunning, err := acquireInstanceLock(instanceLockPath(configPath))
 	if err != nil {
@@ -133,8 +138,11 @@ func runServerOnly(configPath, listen string) int {
 	fmt.Println("Dashboard:", dashboard.URL())
 	fmt.Println("Health:", dashboard.URL()+"healthz")
 	fmt.Println("Press Ctrl+C to stop.")
+	if openDashboard {
+		_ = openBrowser(dashboard.URL())
+	}
 
-	signals, stopSignals := signal.NotifyContext(context.Background(), os.Interrupt)
+	signals, stopSignals := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stopSignals()
 	select {
 	case <-signals.Done():
@@ -437,24 +445,39 @@ func newDashboardHandler(app *App, onQuit func()) http.Handler {
 			return
 		}
 		var request struct {
-			PollSeconds  int    `json:"poll_seconds"`
-			StartAtLogin bool   `json:"start_at_login"`
-			Paused       bool   `json:"paused"`
-			Theme        string `json:"theme"`
+			PollSeconds        int    `json:"poll_seconds"`
+			StartAtLogin       bool   `json:"start_at_login"`
+			Paused             bool   `json:"paused"`
+			Theme              string `json:"theme"`
+			DisableUpdateCheck bool   `json:"disable_update_check"`
 		}
 		if !decodeJSON(w, r, &request) {
 			return
 		}
 		if err := app.UpdateSettings(Settings{
-			PollSeconds:  request.PollSeconds,
-			StartAtLogin: request.StartAtLogin,
-			Paused:       request.Paused,
-			Theme:        request.Theme,
+			PollSeconds:        request.PollSeconds,
+			StartAtLogin:       request.StartAtLogin,
+			Paused:             request.Paused,
+			Theme:              request.Theme,
+			DisableUpdateCheck: request.DisableUpdateCheck,
 		}); err != nil {
 			writeAPIError(w, http.StatusBadRequest, err)
 			return
 		}
 		writeJSON(w, http.StatusOK, app.State())
+	})
+
+	mux.HandleFunc("GET /api/updates", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, app.cachedUpdateStatus())
+	})
+
+	mux.HandleFunc("POST /api/updates/check", func(w http.ResponseWriter, r *http.Request) {
+		if !requireLocalJSON(w, r) {
+			return
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+		defer cancel()
+		writeJSON(w, http.StatusOK, app.CheckForUpdates(ctx))
 	})
 
 	mux.HandleFunc("GET /api/config/export", func(w http.ResponseWriter, r *http.Request) {

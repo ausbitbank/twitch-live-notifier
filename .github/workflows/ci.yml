@@ -50,5 +50,58 @@ jobs:
               -o /tmp/TwitchLiveNotifier-macos-$arch .
           done
 
+      - name: Build Linux packages
+        run: |
+          ./packaging/linux/build-deb.sh 0.0.0-ci /tmp/TwitchLiveNotifier-linux-amd64 amd64
+          curl -fsSL -o /tmp/appimagetool-x86_64.AppImage \
+            https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage
+          chmod +x /tmp/appimagetool-x86_64.AppImage
+          APPIMAGETOOL=/tmp/appimagetool-x86_64.AppImage \
+            ./packaging/linux/build-appimage.sh 0.0.0-ci /tmp/TwitchLiveNotifier-linux-amd64 x86_64
+          ls -lh dist/TwitchLiveNotifier-v0.0.0-ci-Linux-x64.deb dist/TwitchLiveNotifier-v0.0.0-ci-Linux-x64.AppImage
+
       - name: Build Docker image
         run: docker build -t twitch-live-notifier:ci .
+
+  windows-package:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: Install Inno Setup
+        run: choco install innosetup --no-progress -y
+      - name: Build Windows executable and installer
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          $env:CGO_ENABLED = "0"
+          $env:GOOS = "windows"
+          $env:GOARCH = "amd64"
+          $env:GOAMD64 = "v1"
+          go build -trimpath -buildvcs=false `
+            -ldflags "-s -w -H=windowsgui -buildid=" `
+            -o dist/TwitchLiveNotifier.exe .
+          ./packaging/windows/build-installer.ps1 -Version "0.0.0-ci" -ExePath "dist/TwitchLiveNotifier.exe"
+          Get-Item "dist/installer/TwitchLiveNotifier-v0.0.0-ci-Windows-x64-Setup.exe" | Format-List Name,Length
+
+  macos-package:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: Build macOS app bundles
+        run: |
+          for arch in amd64 arm64; do
+            CGO_ENABLED=0 GOOS=darwin GOARCH=$arch \
+              go build -trimpath -buildvcs=false \
+              -ldflags "-s -w" \
+              -o "dist/TwitchLiveNotifier-macos-$arch" .
+            ./packaging/macos/build-app.sh 0.0.0-ci "$arch" "dist/TwitchLiveNotifier-macos-$arch"
+            plutil -lint "dist/macos-$arch/Twitch Live to Discord.app/Contents/Info.plist"
+          done

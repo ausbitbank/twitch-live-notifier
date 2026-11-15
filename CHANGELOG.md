@@ -1,5 +1,26 @@
 # Changelog
 
+## Unreleased
+
+### Packaging
+
+- Added a per-user Inno Setup Windows installer with Start Menu and optional
+  desktop shortcuts. Upgrades preserve `%APPDATA%\TwitchLiveNotifier`.
+- Added optional Windows code-signing hooks for the executable and installer.
+- Added winget manifest templates, a render script, and a release-time winget zip.
+- Added macOS `.app` bundles for Intel and Apple Silicon plus optional signing
+  and notarization hooks.
+- Added Linux `.deb` and AppImage packages, a desktop entry, icon, and systemd
+  user service.
+
+### Updates
+
+- Added a cached GitHub-release update check with version comparison, download
+  link, release-notes link, and a Settings card.
+- Added a Settings toggle to disable outbound update checks.
+- The app reports its version and update status but does not silently replace its
+  own binary.
+
 ## 2.3.0 - 2026-11-16
 
 ### Stream lifecycle

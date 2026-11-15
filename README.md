@@ -58,11 +58,11 @@ posts where, and tune each message with placeholders and a live Discord preview.
 
 ## Runs on
 
-| Platform | Dashboard | Background mode | Native tray |
+| Platform | Dashboard | Install | Native tray |
 | --- | --- | --- | --- |
-| **Windows 10/11 x64** | Browser at `127.0.0.1` | Tray app / Start with Windows | Yes |
-| **Linux x64** | Browser at `127.0.0.1` | `--serve` with systemd | No |
-| **macOS Intel / Apple Silicon** | Browser at `127.0.0.1` | `--serve` with launchd | No |
+| **Windows 10/11 x64** | Browser at `127.0.0.1` | Installer or portable ZIP | Yes |
+| **Linux x64** | Browser at `127.0.0.1` | `.deb`, AppImage, or `--serve` | No |
+| **macOS Intel / Apple Silicon** | Browser at `127.0.0.1` | `.app` bundle or `--serve` | No |
 | **Docker (amd64/arm64)** | Port `8787` | `restart: unless-stopped` | No |
 
 Any 64-bit desktop with a modern browser can run the dashboard. Other Go
@@ -72,32 +72,47 @@ architectures can be built from source.
 
 ### Windows
 
-1. Download `TwitchLiveNotifier.exe` from the
-   [latest release](../../releases/latest).
-2. Run it. The dashboard opens in your browser.
-3. Leave it running in the tray. Windows SmartScreen may warn because the
-   executable is unsigned.
+1. Download the Windows installer (`TwitchLiveNotifier-vX.Y.Z-Windows-x64-Setup.exe`)
+   from the [latest release](../../releases/latest), or use the portable ZIP.
+2. Run the installer. It installs per-user, creates a Start Menu shortcut, and
+   offers an optional desktop shortcut.
+3. Launch it. The dashboard opens in your browser and the app keeps running in
+   the tray.
+4. Leave it running. Windows SmartScreen may warn for unsigned builds; signed
+   releases clear the warning as certificate reputation builds.
+
+Upgrading with the installer does not touch `%APPDATA%\TwitchLiveNotifier`, so
+streamers, destinations, templates, and secrets are preserved.
 
 ### Linux
 
-1. Download the Linux x64 archive from the
+1. Download the `.deb` or AppImage from the
    [latest release](../../releases/latest), or run `./build-linux.sh`.
-2. Extract it and start the dashboard:
+2. Install the deb:
    ```bash
-   ./TwitchLiveNotifier-linux-amd64 --serve
+   sudo apt install ./TwitchLiveNotifier-vX.Y.Z-Linux-x64.deb
+   systemctl --user enable --now twitch-live-notifier
    ```
-3. Open the URL it prints, normally <http://127.0.0.1:8787/>.
+   Or run the AppImage:
+   ```bash
+   chmod +x TwitchLiveNotifier-vX.Y.Z-Linux-x64.AppImage
+   ./TwitchLiveNotifier-vX.Y.Z-Linux-x64.AppImage
+   ```
+3. Open <http://127.0.0.1:8787/>. The desktop entry and AppImage also open the
+   dashboard automatically.
 
 ### macOS
 
 1. Download the macOS archive from the
    [latest release](../../releases/latest), or run `./build-macos.sh`.
-2. Start the dashboard:
+2. Move `Twitch Live to Discord.app` into Applications and launch it, or run the
+   raw binary:
    ```bash
    ./TwitchLiveNotifier-macos-arm64 --serve   # Apple Silicon
    ./TwitchLiveNotifier-macos-amd64 --serve   # Intel
    ```
-3. Open the URL it prints, normally <http://127.0.0.1:8787/>.
+3. The app bundle opens the dashboard automatically. The raw binary prints the
+   URL, normally <http://127.0.0.1:8787/>.
 
 Then, on any platform:
 
@@ -274,6 +289,10 @@ Any other role mention is inert, even if someone types it into the template.
   uptime, pause state, and counts. It returns HTTP 503 when checks are stale.
   Docker uses this endpoint for its built-in healthcheck, so it stays reachable
   even when a dashboard token is set.
+- **Updates:** the app checks the latest GitHub release once a day and from
+  Settings. It reports the current version, latest version, and a download link.
+  It never silently replaces its own binary. Turn the check off in Settings if
+  you do not want the outbound GitHub request.
 
 ## Notification filters and quiet hours
 
@@ -329,9 +348,10 @@ If you expose the dashboard beyond `127.0.0.1`, set a **Dashboard token** under
 Settings. The token is required for API access; `/healthz` stays public for
 Docker health checks.
 
-The app has no analytics, telemetry, or auto-updater. It talks directly to
-Twitch and Discord. By default the dashboard is served only on `127.0.0.1` and
-is not exposed to your network. The Docker image listens on `0.0.0.0` inside the
+The app has no analytics, telemetry, or silent auto-updater. It talks directly
+to Twitch and Discord. When update checks are enabled, it also requests the
+latest release metadata from GitHub. By default the dashboard is served only on
+`127.0.0.1` and is not exposed to your network. The Docker image listens on `0.0.0.0` inside the
 container, but the compose file publishes it on loopback by default; see
 [docs/docker.md](docs/docker.md) before exposing it. Twitch is checked through
 Twitch's public web GraphQL endpoint; no Twitch account or OAuth token is used.
@@ -401,6 +421,7 @@ diagnostics and background setups:
 ```text
 TwitchLiveNotifier[.exe]
     Windows: open the dashboard and keep monitoring in the tray.
+    Linux/macOS: start the dashboard and open the browser.
 
 TwitchLiveNotifier[.exe] --background
     Windows: start in the tray without opening the browser. Used at login.
@@ -409,7 +430,7 @@ TwitchLiveNotifier[.exe] --check
     Check every streamer once, post any pending alerts, and exit.
 
 TwitchLiveNotifier[.exe] --serve
-    Linux/macOS: run the dashboard in the foreground. Open the printed URL.
+    Run the dashboard in the foreground without opening a browser.
 
 TwitchLiveNotifier[.exe] --healthcheck
     Probe the local /healthz endpoint and exit. Used by Docker.
@@ -456,6 +477,20 @@ macOS builds:
 ./build-macos.sh
 ```
 
+Packages:
+
+```bash
+# Linux .deb / AppImage (AppImage needs appimagetool)
+./packaging/linux/build-deb.sh 2.4.0
+APPIMAGETOOL=/path/to/appimagetool ./packaging/linux/build-appimage.sh 2.4.0
+
+# macOS .app bundle for either arch
+./packaging/macos/build-app.sh 2.4.0 arm64 dist/TwitchLiveNotifier-macos-arm64
+
+# Windows installer (on Windows, with Inno Setup 6)
+.\packaging\windows\build-installer.ps1 -Version 2.4.0
+```
+
 Docker:
 
 ```bash
@@ -464,8 +499,10 @@ docker build -t twitch-live-notifier .
 docker compose up -d --build
 ```
 
-The release workflow builds Windows x64, Linux x64, macOS Intel/Apple Silicon
-artifacts, plus multi-arch Docker images from a tag.
+The release workflow builds Windows x64 (installer + ZIP), Linux x64
+(`.deb` + AppImage), macOS Intel/Apple Silicon (`.app` + binaries), winget
+manifests, and multi-arch Docker images from a tag. See
+[Signing and packaging](docs/signing.md) for optional certificate secrets.
 
 To regenerate the app icon, web assets, and Windows resources after changing
 the artwork or version:
@@ -487,8 +524,11 @@ This requires `go-winres` and ImageMagick.
 - The dashboard has no login by default. Set a dashboard token if needed, and
   keep it on loopback, behind an SSH tunnel, or behind an authenticating reverse
   proxy. Do not publish port 8787 directly.
-- The Windows executable is unsigned, so Windows SmartScreen may warn on first
-  launch.
+- Release artifacts are unsigned unless the repository signing secrets are
+  configured. Unsigned Windows builds may trigger SmartScreen, and unsigned
+  macOS bundles may require a Gatekeeper override.
+- The app checks for updates but does not auto-install them. A self-replacing
+  updater will wait for signed artifacts and signature verification.
 - Windows includes a native tray icon. Linux and macOS currently run as a local
   browser dashboard and do not have native tray integration.
 - Live-role automation and schedule sync are not implemented; those need an
@@ -504,6 +544,7 @@ This requires `go-winres` and ImageMagick.
 
 - [Public roadmap](docs/roadmap.md)
 - [Docker and self-hosting](docs/docker.md)
+- [Signing and packaging](docs/signing.md)
 - [Competitive research and sources](docs/competitive-research.md)
 - [Clean-session project brief](docs/project-context.md)
 
