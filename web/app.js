@@ -572,6 +572,7 @@
           ${badge}
         </div>
         <div class="template-preview-line"><strong>Message:</strong> ${escapeHTML(summary)}</div>
+        ${(webhook.role_ids || []).length ? `<div class="meta" style="margin-top:6px">Role pings: ${(webhook.role_ids || []).map((id) => `<code class="discord-id">${escapeHTML(id)}</code>`).join(" ")}</div>` : ""}
         <div class="meta" style="margin-top:8px">${connected} streamer${connected === 1 ? "" : "s"} connected${lastSuccess}</div>
         ${error}
         <div class="destination-actions">
@@ -669,6 +670,28 @@
     }
   }
 
+  function parseRoleIDs(value) {
+    return String(value || "")
+      .split(/[\s,]+/)
+      .map((part) => part.trim())
+      .filter(Boolean)
+      .map((part) => part.replace(/^<@&/, "").replace(/>$/, ""))
+      .filter(Boolean);
+  }
+
+  function roleIDsText(roleIDs) {
+    return (roleIDs || []).join(", ");
+  }
+
+  function templatePingStreamer(template) {
+    return template?.ping_streamer !== false;
+  }
+
+  function templatePingRoles(template) {
+    return template?.ping_roles !== false;
+  }
+
+
   function openModal(content, { narrow = false } = {}) {
     closeModal();
     const root = $("#modal-root");
@@ -719,6 +742,9 @@
       ? "Change the label, webhook, or message style."
       : "Pick a Discord webhook and make the alert your own.";
     const enabled = existing ? existing.enabled : true;
+    const roleIDs = existing?.role_ids || [];
+    const pingStreamer = templatePingStreamer(template);
+    const pingRoles = templatePingRoles(template);
 
     openModal(`
       <div class="modal-head">
@@ -742,6 +768,24 @@
               <div class="switch-row">
                 <div class="switch-copy"><strong>Destination active</strong><span>When paused, alerts are not sent here.</span></div>
                 <label class="switch"><input id="wh-enabled" type="checkbox" ${enabled ? "checked" : ""}><span class="switch-track"></span></label>
+              </div>
+
+              <div class="settings-section">
+                <div class="field-label" style="margin-bottom:7px">Mention controls</div>
+                <label class="field">
+                  <span class="field-label">Discord role IDs</span>
+                  <input id="wh-roles" class="input input-mono" value="${escapeHTML(roleIDsText(roleIDs))}" placeholder="123456789012345678, 987654321098765432" autocomplete="off" spellcheck="false">
+                  <span class="field-hint">Comma or space separated. Only these role IDs can be pinged by <code>{role_mentions}</code>.</span>
+                </label>
+                <div class="form-grid two">
+                  ${toggleRow("tpl-ping-streamer", "Ping streamer", pingStreamer)}
+                  ${toggleRow("tpl-ping-roles", "Ping configured roles", pingRoles)}
+                </div>
+                <div class="switch-row" style="padding:6px 0">
+                  <div class="switch-copy"><strong>Allow @everyone / @here</strong><span>Off by default. Turning this on can ping the whole server.</span></div>
+                  <label class="switch"><input id="tpl-allow-everyone" type="checkbox" ${template.allow_everyone ? "checked" : ""}><span class="switch-track"></span></label>
+                </div>
+                <div class="warning-box" style="margin-top:8px">${icon("bell")}<span>Role and user IDs are the only mentions the app can ping. <code>@everyone</code> and <code>@here</code> stay blocked unless this destination explicitly allows them.</span></div>
               </div>
 
               <div class="settings-section">
@@ -868,6 +912,9 @@
       show_game: Boolean($("#tpl-game")?.checked),
       show_viewers: Boolean($("#tpl-viewers")?.checked),
       show_live_since: Boolean($("#tpl-live")?.checked),
+      ping_streamer: Boolean($("#tpl-ping-streamer")?.checked),
+      ping_roles: Boolean($("#tpl-ping-roles")?.checked),
+      allow_everyone: Boolean($("#tpl-allow-everyone")?.checked),
     };
   }
 
@@ -897,6 +944,9 @@
       "tpl-game": template.show_game,
       "tpl-viewers": template.show_viewers,
       "tpl-live": template.show_live_since,
+      "tpl-ping-streamer": templatePingStreamer(template),
+      "tpl-ping-roles": templatePingRoles(template),
+      "tpl-allow-everyone": template.allow_everyone,
     };
     Object.entries(toggles).forEach(([id, checked]) => {
       const field = $(`#${id}`);
@@ -943,6 +993,7 @@
     const template = readTemplate();
     const channelId = $("#preview-channel")?.value || "";
     const webhookLabel = $("#wh-label")?.value || "Discord";
+    const roleIDs = parseRoleIDs($("#wh-roles")?.value || "");
     try {
       const data = await api("/api/preview", {
         method: "POST",
@@ -950,6 +1001,7 @@
           template,
           channel_id: channelId,
           webhook_label: webhookLabel,
+          role_ids: roleIDs,
         },
       });
       if (sequence !== previewSequence) {
@@ -960,18 +1012,57 @@
       const unknown = data.unknown_placeholders || [];
       const empty = !template.content.trim() && !template.embed_title.trim() && !template.embed_description.trim();
       const previewChannel = channelById(channelId);
-      const usesDiscordMention = [template.content, template.embed_title, template.embed_description, template.footer]
-        .some((value) => String(value).includes("{discord_mention}"));
-      const missingDiscordID = usesDiscordMention && channelId && previewChannel && !previewChannel.discord_id;
+      const allText = [template.content, template.embed_title, template.embed_description, template.footer].join("\n");
+      const usesDiscordMention = allText.includes("{discord_mention}");
+      const usesRoleMentions = allText.includes("{role_mentions}");
+      const missingDiscordID = usesDiscordMention && template.ping_streamer && channelId && previewChannel && !previewChannel.discord_id;
+      const missingRoles = usesRoleMentions && template.ping_roles && !roleIDs.length;
+      const everyoneTyped = /@(everyone|here)\b/i.test(allText);
+      const messages = [];
       if (unknown.length) {
-        warning.innerHTML = `<div class="warning-box" style="margin-top:10px">${icon("bell")} Unknown placeholder${unknown.length === 1 ? "" : "s"}: ${escapeHTML(unknown.join(", "))}</div>`;
-      } else if (missingDiscordID) {
-        warning.innerHTML = `<div class="warning-box" style="margin-top:10px">${icon("bell")} This streamer has no Discord user ID yet. Add one under Streamers, or {discord_mention} will render as plain @text.</div>`;
-      } else if (empty) {
-        warning.innerHTML = `<div class="warning-box" style="margin-top:10px">${icon("bell")} Nothing will be posted. Add message content or embed text.</div>`;
-      } else {
-        warning.innerHTML = "";
+        messages.push(`Unknown placeholder${unknown.length === 1 ? "" : "s"}: ${unknown.join(", ")}`);
       }
+      if (empty) {
+        messages.push("Nothing will be posted. Add message content or embed text.");
+      }
+      if (missingDiscordID) {
+        messages.push("This streamer has no Discord user ID yet. Add one under Streamers, or {discord_mention} will render as plain @text.");
+      }
+      if (missingRoles) {
+        messages.push("Add at least one role ID to use {role_mentions}.");
+      }
+      if (roleIDs.length && !template.ping_roles) {
+        messages.push("Role pings are turned off, so {role_mentions} renders empty.");
+      }
+      if (everyoneTyped && !template.allow_everyone) {
+        messages.push("@everyone / @here will not ping. Enable it explicitly in Mention controls if you really want it.");
+      }
+      if (template.allow_everyone) {
+        messages.push("This destination is allowed to ping @everyone / @here. Use with care.");
+      }
+      const allowed = data.payload?.allowed_mentions || { parse: [], roles: [], users: [] };
+      const pings = [];
+      const seenPings = new Set();
+      for (const match of allText.matchAll(/<@!?(\d{17,20})>/g)) {
+        if ((allowed.users || []).includes(match[1]) && !seenPings.has(`user:${match[1]}`)) {
+          seenPings.add(`user:${match[1]}`);
+          pings.push(`@user ${match[1]}`);
+        }
+      }
+      for (const match of allText.matchAll(/<@&(\d{17,20})>/g)) {
+        if ((allowed.roles || []).includes(match[1]) && !seenPings.has(`role:${match[1]}`)) {
+          seenPings.add(`role:${match[1]}`);
+          pings.push(`@role ${match[1]}`);
+        }
+      }
+      if (everyoneTyped && (allowed.parse || []).includes("everyone")) {
+        pings.push("@everyone / @here");
+      }
+      const warningsHTML = messages.map((message) => `<div class="warning-box" style="margin-top:10px">${icon("bell")} <span>${escapeHTML(message)}</span></div>`).join("");
+      const pingsHTML = pings.length
+        ? `<div class="ping-summary">Will ping: ${pings.map((ping) => `<span class="ping-chip">${escapeHTML(ping)}</span>`).join("")}</div>`
+        : "";
+      warning.innerHTML = warningsHTML + pingsHTML;
     } catch (error) {
       if (sequence !== previewSequence) {
         return;
@@ -1037,7 +1128,9 @@
     text = text.replace(/\*([^*]+)\*/g, "<em>$1</em>");
     text = text.replace(/\[([^\]]+)\]\((https?:\/\/[^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
     text = text.replace(/&lt;t:(\d+):([RrFfDdTt])&gt;/g, (_, unix, style) => formatDiscordTimestamp(unix, style));
-    text = text.replace(/&lt;@!?(\d+)&gt;/g, '<span class="discord-mention">@mention</span>');
+    text = text.replace(/&lt;@&(\d+)&gt;/g, '<span class="discord-mention">@role</span>');
+    text = text.replace(/&lt;@!?(\d+)&gt;/g, '<span class="discord-mention">@user</span>');
+    text = text.replace(/(^|[\s(])@(everyone|here)\b/gi, '$1<span class="discord-mention">@$2</span>');
     return text.replace(/\n/g, "<br>");
   }
 
@@ -1315,6 +1408,14 @@ function openSampleModal(channelId) {
 
   async function handleChange(event) {
     const target = event.target;
+    if (target.id === "tpl-allow-everyone" && target.checked) {
+      const confirmed = window.confirm("Allow @everyone / @here for this destination? This can ping the whole server. Continue?");
+      if (!confirmed) {
+        target.checked = false;
+        schedulePreview();
+        return;
+      }
+    }
     if (target.matches('[data-action="toggle-destination"]')) {
       const channel = channelById(target.dataset.channel);
       if (!channel) {
@@ -1425,6 +1526,7 @@ function openSampleModal(channelId) {
       const body = {
         label: $("#wh-label").value.trim(),
         url: $("#wh-url").value.trim(),
+        role_ids: parseRoleIDs($("#wh-roles")?.value || ""),
         enabled: $("#wh-enabled").checked,
         template,
       };

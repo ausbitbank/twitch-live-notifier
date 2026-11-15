@@ -614,7 +614,7 @@ func (a *App) SetDestinations(channelID string, webhookIDs []string) error {
 	return nil
 }
 
-func (a *App) AddWebhook(label, rawURL string, template *Template) (Webhook, error) {
+func (a *App) AddWebhook(label, rawURL string, roleIDs []string, template *Template) (Webhook, error) {
 	label = strings.TrimSpace(label)
 	if label == "" {
 		return Webhook{}, errors.New("give this destination a label")
@@ -623,6 +623,10 @@ func (a *App) AddWebhook(label, rawURL string, template *Template) (Webhook, err
 		return Webhook{}, errors.New("destination labels must be 60 characters or fewer")
 	}
 	webhookURL, err := normalizeWebhookURL(rawURL)
+	if err != nil {
+		return Webhook{}, err
+	}
+	normalizedRoles, err := normalizeRoleIDs(roleIDs)
 	if err != nil {
 		return Webhook{}, err
 	}
@@ -649,6 +653,7 @@ func (a *App) AddWebhook(label, rawURL string, template *Template) (Webhook, err
 		Label:    label,
 		URL:      webhookURL,
 		Enabled:  true,
+		RoleIDs:  normalizedRoles,
 		Template: chosen,
 	}
 	firstWebhook := len(a.cfg.Webhooks) == 0
@@ -667,7 +672,7 @@ func (a *App) AddWebhook(label, rawURL string, template *Template) (Webhook, err
 	return webhook, nil
 }
 
-func (a *App) UpdateWebhook(id, label, rawURL string, enabled bool, template Template) (Webhook, error) {
+func (a *App) UpdateWebhook(id, label, rawURL string, roleIDs []string, enabled bool, template Template) (Webhook, error) {
 	label = strings.TrimSpace(label)
 	if label == "" {
 		return Webhook{}, errors.New("give this destination a label")
@@ -676,6 +681,10 @@ func (a *App) UpdateWebhook(id, label, rawURL string, enabled bool, template Tem
 		return Webhook{}, errors.New("destination labels must be 60 characters or fewer")
 	}
 	webhookURL, err := normalizeWebhookURL(rawURL)
+	if err != nil {
+		return Webhook{}, err
+	}
+	normalizedRoles, err := normalizeRoleIDs(roleIDs)
 	if err != nil {
 		return Webhook{}, err
 	}
@@ -709,6 +718,7 @@ func (a *App) UpdateWebhook(id, label, rawURL string, enabled bool, template Tem
 	a.cfg.Webhooks[index].Label = label
 	a.cfg.Webhooks[index].URL = webhookURL
 	a.cfg.Webhooks[index].Enabled = enabled
+	a.cfg.Webhooks[index].RoleIDs = normalizedRoles
 	a.cfg.Webhooks[index].Template = template
 	if urlChanged || (enabled && !wasEnabled) {
 		a.cfg.Webhooks[index].Invalid = false
@@ -836,12 +846,12 @@ func (a *App) SendSample(channelID string, webhookIDs []string) (int, error) {
 	return count, nil
 }
 
-func (a *App) Preview(template Template, channelID, webhookLabel string) (discordWebhookPayload, []string) {
+func (a *App) Preview(template Template, channelID, webhookLabel string, roleIDs []string) (discordWebhookPayload, []string) {
 	if strings.TrimSpace(webhookLabel) == "" {
 		webhookLabel = "Discord"
 	}
 	info := a.previewInfo(channelID)
-	webhook := Webhook{Label: webhookLabel, Template: template}
+	webhook := Webhook{Label: webhookLabel, Template: template, RoleIDs: sanitizeRoleIDs(roleIDs)}
 	payload := buildPayload(webhook, info, time.Now(), false)
 	unknown := append([]string{}, unknownPlaceholders(template.Content)...)
 	unknown = append(unknown, unknownPlaceholders(template.EmbedTitle)...)

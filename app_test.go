@@ -182,7 +182,7 @@ func TestUpdateWebhookURLResetsLastStream(t *testing.T) {
 	}}
 	app.mu.Unlock()
 
-	_, err := app.UpdateWebhook(webhook.ID, "Community", "https://discord.com/api/webhooks/1234567890/zyxwvutsrqponmlkjihgfedcba", true, defaultTemplate())
+	_, err := app.UpdateWebhook(webhook.ID, "Community", "https://discord.com/api/webhooks/1234567890/zyxwvutsrqponmlkjihgfedcba", nil, true, defaultTemplate())
 	if err != nil {
 		t.Fatalf("UpdateWebhook returned error: %v", err)
 	}
@@ -226,25 +226,38 @@ func TestPreviewAndUnknownPlaceholders(t *testing.T) {
 	}
 	template := defaultTemplate()
 	template.Content = "{streamer} {mystery}"
-	payload, unknown := app.Preview(template, channel.ID, "Community")
+	payload, unknown := app.Preview(template, channel.ID, "Community", nil)
 	if len(payload.Embeds) != 1 || payload.Embeds[0].Title != "Testing the live notifier" {
 		t.Fatalf("payload = %+v", payload)
 	}
 	if len(unknown) != 1 || unknown[0] != "{mystery}" {
 		t.Fatalf("unknown = %#v", unknown)
 	}
+
+	const roleID = "123456789012345678"
+	template.Content = "{role_mentions}"
+	payload, unknown = app.Preview(template, channel.ID, "Community", []string{"<@&" + roleID + ">"})
+	if len(unknown) != 0 {
+		t.Fatalf("role placeholder reported as unknown: %#v", unknown)
+	}
+	if !strings.Contains(payload.Content, "<@&"+roleID+">") {
+		t.Fatalf("preview content = %q", payload.Content)
+	}
+	if payload.AllowedMentions == nil || len(payload.AllowedMentions.Roles) != 1 || payload.AllowedMentions.Roles[0] != roleID {
+		t.Fatalf("preview allowed mentions = %+v", payload.AllowedMentions)
+	}
 }
 
 func TestAddWebhookValidation(t *testing.T) {
 	app := newTestApp(t)
-	_, err := app.AddWebhook("Community", "https://discord.com/api/webhooks/1234567890/abcdefghijklmnopqrstuvwxyz", nil)
+	_, err := app.AddWebhook("Community", "https://discord.com/api/webhooks/1234567890/abcdefghijklmnopqrstuvwxyz", nil, nil)
 	if err != nil {
 		t.Fatalf("AddWebhook returned error: %v", err)
 	}
-	if _, err := app.AddWebhook("Community", "https://discord.com/api/webhooks/1234567891/abcdefghijklmnopqrstuvwxyz", nil); err == nil {
+	if _, err := app.AddWebhook("Community", "https://discord.com/api/webhooks/1234567891/abcdefghijklmnopqrstuvwxyz", nil, nil); err == nil {
 		t.Fatal("duplicate label accepted")
 	}
-	if _, err := app.AddWebhook("Other", "https://discord.com/api/webhooks/1234567890/abcdefghijklmnopqrstuvwxyz", nil); err == nil {
+	if _, err := app.AddWebhook("Other", "https://discord.com/api/webhooks/1234567890/abcdefghijklmnopqrstuvwxyz", nil, nil); err == nil {
 		t.Fatal("duplicate URL accepted")
 	}
 }
@@ -335,7 +348,7 @@ func TestFirstWebhookConnectsExistingStreamers(t *testing.T) {
 	}}
 	app.mu.Unlock()
 
-	webhook, err := app.AddWebhook("Community", "https://discord.com/api/webhooks/1234567890/abcdefghijklmnopqrstuvwxyz", nil)
+	webhook, err := app.AddWebhook("Community", "https://discord.com/api/webhooks/1234567890/abcdefghijklmnopqrstuvwxyz", nil, nil)
 	if err != nil {
 		t.Fatalf("AddWebhook returned error: %v", err)
 	}
@@ -449,7 +462,7 @@ func TestInvalidDestinationIsMarkedAndSkipped(t *testing.T) {
 	}
 
 	replacement := "https://discord.com/api/webhooks/987654321012345678/replacementtoken12345"
-	if _, err := app.UpdateWebhook(broken.ID, "Repaired", replacement, true, defaultTemplate()); err != nil {
+	if _, err := app.UpdateWebhook(broken.ID, "Repaired", replacement, nil, true, defaultTemplate()); err != nil {
 		t.Fatalf("UpdateWebhook returned error: %v", err)
 	}
 	if app.ConfigSnapshot().Webhooks[0].Invalid {

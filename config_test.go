@@ -105,6 +105,7 @@ func TestConfigRoundTrip(t *testing.T) {
 			Label:    "Community",
 			URL:      webhookURL,
 			Enabled:  true,
+			RoleIDs:  []string{"123456789012345678"},
 			Template: defaultTemplate(),
 		}},
 		Settings: Settings{PollSeconds: 120, Theme: "dark"},
@@ -178,6 +179,25 @@ func TestCloneConfigDoesNotShareSlices(t *testing.T) {
 	clone.Channels[0].Destinations[0].WebhookID = "c"
 	if cfg.Channels[0].Destinations[0].WebhookID != "b" {
 		t.Fatal("cloneConfig shared destination storage")
+	}
+}
+
+func TestNormalizeRoleIDs(t *testing.T) {
+	const first = "123456789012345678"
+	const second = "987654321098765432"
+	roles, err := normalizeRoleIDs([]string{first, "<@&" + second + ">", first, ""})
+	if err != nil {
+		t.Fatalf("normalizeRoleIDs returned error: %v", err)
+	}
+	if len(roles) != 2 || roles[0] != first || roles[1] != second {
+		t.Fatalf("roles = %#v", roles)
+	}
+	if _, err := normalizeRoleIDs([]string{"@everyone"}); err == nil {
+		t.Fatal("invalid role ID accepted")
+	}
+	empty, err := normalizeRoleIDs(nil)
+	if err != nil || empty != nil {
+		t.Fatalf("empty roles = %#v, %v", empty, err)
 	}
 }
 

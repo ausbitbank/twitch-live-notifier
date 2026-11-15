@@ -44,6 +44,7 @@ var templatePlaceholders = []Placeholder{
 	{"{webhook}", "Destination label"},
 	{"{channel}", "Twitch login name"},
 	{"{discord_mention}", "Optional ping for the streamer's Discord user ID"},
+	{"{role_mentions}", "Configured Discord role pings for this destination"},
 }
 
 func normalizeTemplate(t Template) Template {
@@ -55,7 +56,23 @@ func normalizeTemplate(t Template) Template {
 		!t.ShowViewers && !t.ShowLiveSince {
 		return defaultTemplate()
 	}
+	if t.PingStreamer == nil {
+		value := true
+		t.PingStreamer = &value
+	}
+	if t.PingRoles == nil {
+		value := true
+		t.PingRoles = &value
+	}
 	return t
+}
+
+func streamerPingEnabled(template Template) bool {
+	return boolPointerValue(template.PingStreamer, true)
+}
+
+func rolePingEnabled(template Template) bool {
+	return boolPointerValue(template.PingRoles, true)
 }
 
 func validateTemplate(t Template) (Template, error) {
@@ -98,6 +115,11 @@ func parseHexColor(value string) (int, error) {
 }
 
 func renderTemplate(text string, info StreamInfo, webhookLabel string, now time.Time) string {
+	return renderMessage(text, info, Webhook{Label: webhookLabel, Template: defaultTemplate()}, now)
+}
+
+func renderMessage(text string, info StreamInfo, webhook Webhook, now time.Time) string {
+	template := normalizeTemplate(webhook.Template)
 	liveFor := "Ended"
 	if info.Live && !info.StartedAt.IsZero() {
 		liveFor = formatDuration(now.Sub(info.StartedAt))
@@ -111,8 +133,14 @@ func renderTemplate(text string, info StreamInfo, webhookLabel string, now time.
 		viewers = formatCount(info.Viewers)
 	}
 	discordMention := "@" + info.Streamer
-	if id, err := normalizeDiscordID(info.DiscordID); err == nil && id != "" {
-		discordMention = "<@" + id + ">"
+	if streamerPingEnabled(template) {
+		if id, err := normalizeDiscordID(info.DiscordID); err == nil && id != "" {
+			discordMention = "<@" + id + ">"
+		}
+	}
+	roleMentions := ""
+	if rolePingEnabled(template) {
+		roleMentions = formatRoleMentions(webhook.RoleIDs)
 	}
 
 	replacer := strings.NewReplacer(
@@ -124,11 +152,24 @@ func renderTemplate(text string, info StreamInfo, webhookLabel string, now time.
 		"{viewers}", viewers,
 		"{started}", started,
 		"{live_for}", liveFor,
-		"{webhook}", webhookLabel,
+		"{webhook}", webhook.Label,
 		"{channel}", info.Login,
 		"{discord_mention}", discordMention,
+		"{role_mentions}", roleMentions,
 	)
 	return replacer.Replace(text)
+}
+
+func formatRoleMentions(roleIDs []string) string {
+	roles := sanitizeRoleIDs(roleIDs)
+	if len(roles) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(roles))
+	for _, id := range roles {
+		parts = append(parts, "<@&"+id+">")
+	}
+	return strings.Join(parts, " ")
 }
 
 func unknownPlaceholders(text string) []string {
@@ -149,7 +190,7 @@ func unknownPlaceholders(text string) []string {
 
 func buildPayload(webhook Webhook, info StreamInfo, now time.Time, example bool) discordWebhookPayload {
 	template := normalizeTemplate(webhook.Template)
-	content := renderTemplate(template.Content, info, webhook.Label, now)
+	content := renderMessage(template.Content, info, webhook, now)
 	if example {
 		if content != "" {
 			content = "🧪 **Example:** " + content
@@ -159,9 +200,9 @@ func buildPayload(webhook Webhook, info StreamInfo, now time.Time, example bool)
 	}
 
 	embed := discordEmbed{
-		Title:       renderTemplate(template.EmbedTitle, info, webhook.Label, now),
+		Title:       renderMessage(template.EmbedTitle, info, webhook, now),
 		URL:         info.URL,
-		Description: renderTemplate(template.EmbedDescription, info, webhook.Label, now),
+		Description: renderMessage(template.EmbedDescription, info, webhook, now),
 		Timestamp:   now.UTC().Format(time.RFC3339),
 	}
 	if color, err := parseHexColor(template.Color); err == nil {
@@ -204,7 +245,7 @@ func buildPayload(webhook Webhook, info StreamInfo, now time.Time, example bool)
 	if template.ShowImage && strings.TrimSpace(info.Thumbnail) != "" {
 		embed.Image = &discordImage{URL: withCacheBuster(info.Thumbnail)}
 	}
-	footer := renderTemplate(template.Footer, info, webhook.Label, now)
+	footer := renderMessage(template.Footer, info, webhook, now)
 	if example {
 		if footer != "" {
 			footer += " • Example"
@@ -216,16 +257,28 @@ func buildPayload(webhook Webhook, info StreamInfo, now time.Time, example bool)
 		embed.Footer = &discordFooter{Text: footer}
 	}
 
-	allowedMentions := &discordAllowedMentions{Parse: []string{}}
-	if id, err := normalizeDiscordID(info.DiscordID); err == nil && id != "" {
-		allowedMentions = &discordAllowedMentions{Users: []string{id}}
-	}
-
 	return discordWebhookPayload{
 		Content:         content,
 		Embeds:          []discordEmbed{embed},
-		AllowedMentions: allowedMentions,
+		AllowedMentions: allowedMentionsFor(webhook, info),
 	}
+}
+
+func allowedMentionsFor(webhook Webhook, info StreamInfo) *discordAllowedMentions {
+	template := normalizeTemplate(webhook.Template)
+	allowed := &discordAllowedMentions{Parse: []string{}}
+	if streamerPingEnabled(template) {
+		if id, err := normalizeDiscordID(info.DiscordID); err == nil && id != "" {
+			allowed.Users = []string{id}
+		}
+	}
+	if rolePingEnabled(template) {
+		allowed.Roles = sanitizeRoleIDs(webhook.RoleIDs)
+	}
+	if template.AllowEveryone {
+		allowed.Parse = []string{"everyone"}
+	}
+	return allowed
 }
 
 func buildTestWebhookPayload(now time.Time) discordWebhookPayload {

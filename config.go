@@ -42,6 +42,7 @@ type Webhook struct {
 	Label    string   `json:"label"`
 	URL      string   `json:"url"`
 	Enabled  bool     `json:"enabled"`
+	RoleIDs  []string `json:"role_ids,omitempty"`
 	Template Template `json:"template"`
 
 	LastError           string `json:"last_error,omitempty"`
@@ -62,6 +63,9 @@ type Template struct {
 	ShowGame         bool   `json:"show_game"`
 	ShowViewers      bool   `json:"show_viewers"`
 	ShowLiveSince    bool   `json:"show_live_since"`
+	PingStreamer     *bool  `json:"ping_streamer,omitempty"`
+	PingRoles        *bool  `json:"ping_roles,omitempty"`
+	AllowEveryone    bool   `json:"allow_everyone,omitempty"`
 }
 
 type Settings struct {
@@ -72,12 +76,13 @@ type Settings struct {
 }
 
 var (
-	twitchLoginPattern  = regexp.MustCompile(`^[A-Za-z0-9_]{1,25}$`)
-	webhookTokenPattern = regexp.MustCompile(`^[A-Za-z0-9._-]{10,}$`)
-	discordIDPattern    = regexp.MustCompile(`^\d{17,20}$`)
-	discordMentionRE    = regexp.MustCompile(`^<@!?(\d{17,20})>$`)
-	discordUserURLRE    = regexp.MustCompile(`(?i)^https?://(?:www\.)?discord(?:app)?\.com/users/(\d{17,20})/?$`)
-	discordWebhookHosts = map[string]bool{
+	twitchLoginPattern   = regexp.MustCompile(`^[A-Za-z0-9_]{1,25}$`)
+	webhookTokenPattern  = regexp.MustCompile(`^[A-Za-z0-9._-]{10,}$`)
+	discordIDPattern     = regexp.MustCompile(`^\d{17,20}$`)
+	discordMentionRE     = regexp.MustCompile(`^<@!?(\d{17,20})>$`)
+	discordRoleMentionRE = regexp.MustCompile(`^<@&(\d{17,20})>$`)
+	discordUserURLRE     = regexp.MustCompile(`(?i)^https?://(?:www\.)?discord(?:app)?\.com/users/(\d{17,20})/?$`)
+	discordWebhookHosts  = map[string]bool{
 		"discord.com":        true,
 		"discordapp.com":     true,
 		"ptb.discord.com":    true,
@@ -86,6 +91,8 @@ var (
 )
 
 func defaultTemplate() Template {
+	pingStreamer := true
+	pingRoles := true
 	return Template{
 		Content:          "🔴 **{streamer}** is live on Twitch!",
 		EmbedTitle:       "{title}",
@@ -97,6 +104,8 @@ func defaultTemplate() Template {
 		ShowGame:         true,
 		ShowViewers:      true,
 		ShowLiveSince:    true,
+		PingStreamer:     &pingStreamer,
+		PingRoles:        &pingRoles,
 	}
 }
 
@@ -245,6 +254,7 @@ func normalizeConfig(cfg *Config) {
 		if webhook.Label == "" {
 			webhook.Label = "Discord"
 		}
+		webhook.RoleIDs = sanitizeRoleIDs(webhook.RoleIDs)
 		webhook.Template = normalizeTemplate(webhook.Template)
 	}
 
@@ -311,7 +321,25 @@ func cloneConfig(cfg Config) Config {
 		clone.Channels[i] = channel
 		clone.Channels[i].Destinations = append([]Destination(nil), channel.Destinations...)
 	}
-	clone.Webhooks = append([]Webhook(nil), cfg.Webhooks...)
+	clone.Webhooks = make([]Webhook, len(cfg.Webhooks))
+	for i, webhook := range cfg.Webhooks {
+		clone.Webhooks[i] = webhook
+		clone.Webhooks[i].RoleIDs = append([]string(nil), webhook.RoleIDs...)
+		clone.Webhooks[i].Template = cloneTemplate(webhook.Template)
+	}
+	return clone
+}
+
+func cloneTemplate(template Template) Template {
+	clone := template
+	if template.PingStreamer != nil {
+		value := *template.PingStreamer
+		clone.PingStreamer = &value
+	}
+	if template.PingRoles != nil {
+		value := *template.PingRoles
+		clone.PingRoles = &value
+	}
 	return clone
 }
 
@@ -337,6 +365,73 @@ func normalizeDiscordID(input string) (string, error) {
 		return "", errors.New("Discord user IDs are 17–20 digit numbers; paste the ID or profile URL")
 	}
 	return value, nil
+}
+
+func normalizeRoleID(input string) (string, error) {
+	value := strings.TrimSpace(input)
+	if value == "" {
+		return "", nil
+	}
+	if match := discordRoleMentionRE.FindStringSubmatch(value); match != nil {
+		value = match[1]
+	}
+	if !discordIDPattern.MatchString(value) {
+		return "", errors.New("Discord role IDs are 17–20 digit numbers; paste the ID or <@&role> mention")
+	}
+	return value, nil
+}
+
+// normalizeRoleIDs validates user input and returns a stable, deduplicated
+// list. Discord accepts up to 100 allowed roles; ten keeps the UI manageable.
+func normalizeRoleIDs(input []string) ([]string, error) {
+	seen := make(map[string]bool, len(input))
+	roles := make([]string, 0, len(input))
+	for _, raw := range input {
+		id, err := normalizeRoleID(raw)
+		if err != nil {
+			return nil, err
+		}
+		if id == "" || seen[id] {
+			continue
+		}
+		seen[id] = true
+		roles = append(roles, id)
+		if len(roles) > 10 {
+			return nil, errors.New("add at most 10 role pings per destination")
+		}
+	}
+	if len(roles) == 0 {
+		return nil, nil
+	}
+	return roles, nil
+}
+
+// sanitizeRoleIDs is the non-failing config-loading variant.
+func sanitizeRoleIDs(input []string) []string {
+	seen := make(map[string]bool, len(input))
+	roles := make([]string, 0, len(input))
+	for _, raw := range input {
+		id, err := normalizeRoleID(raw)
+		if err != nil || id == "" || seen[id] {
+			continue
+		}
+		seen[id] = true
+		roles = append(roles, id)
+		if len(roles) == 10 {
+			break
+		}
+	}
+	if len(roles) == 0 {
+		return nil
+	}
+	return roles
+}
+
+func boolPointerValue(value *bool, fallback bool) bool {
+	if value == nil {
+		return fallback
+	}
+	return *value
 }
 
 func normalizeTwitchLogin(input string) (string, error) {

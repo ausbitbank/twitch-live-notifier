@@ -286,12 +286,13 @@ func newDashboardHandler(app *App, onQuit func()) http.Handler {
 		var request struct {
 			Label    string   `json:"label"`
 			URL      string   `json:"url"`
+			RoleIDs  []string `json:"role_ids"`
 			Template Template `json:"template"`
 		}
 		if !decodeJSON(w, r, &request) {
 			return
 		}
-		if _, err := app.AddWebhook(request.Label, request.URL, &request.Template); err != nil {
+		if _, err := app.AddWebhook(request.Label, request.URL, request.RoleIDs, &request.Template); err != nil {
 			writeAPIError(w, http.StatusBadRequest, err)
 			return
 		}
@@ -304,13 +305,14 @@ func newDashboardHandler(app *App, onQuit func()) http.Handler {
 		var request struct {
 			Label    string   `json:"label"`
 			URL      string   `json:"url"`
+			RoleIDs  []string `json:"role_ids"`
 			Enabled  bool     `json:"enabled"`
 			Template Template `json:"template"`
 		}
 		if !decodeJSON(w, r, &request) {
 			return
 		}
-		if _, err := app.UpdateWebhook(r.PathValue("id"), request.Label, request.URL, request.Enabled, request.Template); err != nil {
+		if _, err := app.UpdateWebhook(r.PathValue("id"), request.Label, request.URL, request.RoleIDs, request.Enabled, request.Template); err != nil {
 			writeAPIError(w, http.StatusBadRequest, err)
 			return
 		}
@@ -345,11 +347,12 @@ func newDashboardHandler(app *App, onQuit func()) http.Handler {
 			Template     Template `json:"template"`
 			ChannelID    string   `json:"channel_id"`
 			WebhookLabel string   `json:"webhook_label"`
+			RoleIDs      []string `json:"role_ids"`
 		}
 		if !decodeJSON(w, r, &request) {
 			return
 		}
-		payload, unknown := app.Preview(request.Template, request.ChannelID, request.WebhookLabel)
+		payload, unknown := app.Preview(request.Template, request.ChannelID, request.WebhookLabel, request.RoleIDs)
 		writeJSON(w, http.StatusOK, map[string]any{
 			"payload":              payload,
 			"unknown_placeholders": unknown,
