@@ -186,6 +186,9 @@ blocked. If a streamer has no Discord ID, `{discord_mention}` falls back to plai
   skipped so the app does not hammer Discord. Fix the URL and use **Test
   webhook** to clear it. Other destinations keep working.
 - Use **Check all now** for an immediate pass, or **Check now** on one streamer.
+- Only one instance can use a settings file at a time. Starting a second
+  `--serve` opens the existing dashboard instead of double-posting; a
+  `--check` against a running instance skips safely.
 - **Pause monitoring** stops automatic checks but still allows manual checks.
 - On Windows, **Start with Windows** launches the app quietly in the tray.
   Linux and macOS use systemd/launchd as described below.

@@ -92,6 +92,21 @@ func (s *dashboardServer) Shutdown(ctx context.Context) {
 
 func runServerOnly(configPath, listen string) int {
 	prepareConsole()
+	release, alreadyRunning, err := acquireInstanceLock(instanceLockPath(configPath))
+	if err != nil {
+		return cliError(err)
+	}
+	defer release()
+	if alreadyRunning {
+		if url := waitForDashboard(configPath); url != "" {
+			fmt.Println("Twitch Live to Discord is already running at", url)
+			_ = openBrowser(url)
+		} else {
+			fmt.Println("Twitch Live to Discord is already running for this settings file.")
+		}
+		return 0
+	}
+
 	app, err := NewApp(configPath)
 	if err != nil {
 		return cliError(err)
@@ -448,6 +463,17 @@ func writeAPIError(w http.ResponseWriter, code int, err error) {
 
 func serverPortPath(configPath string) string {
 	return filepath.Join(filepath.Dir(configPath), "server.port")
+}
+
+func waitForDashboard(configPath string) string {
+	path := serverPortPath(configPath)
+	for i := 0; i < 30; i++ {
+		if port, err := readPortFile(path); err == nil {
+			return fmt.Sprintf("http://127.0.0.1:%d/", port)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	return ""
 }
 
 func writePortFile(path string, port int) error {

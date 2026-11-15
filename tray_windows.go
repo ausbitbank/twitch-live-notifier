@@ -257,17 +257,6 @@ func acquireSingleInstance() (syscall.Handle, bool, error) {
 	return syscall.Handle(handle), false, nil
 }
 
-func waitForDashboard(configPath string) string {
-	path := serverPortPath(configPath)
-	for i := 0; i < 30; i++ {
-		if port, err := readPortFile(path); err == nil {
-			return fmt.Sprintf("http://127.0.0.1:%d/", port)
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
-	return ""
-}
-
 func (t *trayState) createWindow() error {
 	instance, _, _ := procGetModuleHandleW.Call(0)
 	t.hInstance = instance

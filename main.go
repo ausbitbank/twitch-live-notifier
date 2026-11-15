@@ -97,6 +97,17 @@ func runCLI(args []string, configPath string, pathErr error) int {
 }
 
 func runCheckOnce(configPath string) int {
+	release, alreadyRunning, err := acquireInstanceLock(instanceLockPath(configPath))
+	if err != nil {
+		return cliError(err)
+	}
+	defer release()
+	if alreadyRunning {
+		prepareConsole()
+		fmt.Println("Another instance is already running; skipping this check to avoid duplicate posts.")
+		return 0
+	}
+
 	app, err := NewApp(configPath)
 	if err != nil {
 		return cliError(err)
