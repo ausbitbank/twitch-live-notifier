@@ -1,7 +1,7 @@
 # Competitive research: Twitch → Discord alerts
 
 **Research date:** 2026-11-15  
-**Product version reviewed:** 2.1.0  
+**Product version reviewed:** 2.2.0  
 **Scope:** Twitch live alerts for Discord communities, not general-purpose Discord bots.
 
 ## Method
@@ -39,7 +39,7 @@ for precise feature claims.
 | **Streamer.bot** | Local automation platform | Twitch, YouTube, Kick | Local-first, extremely flexible actions, Discord webhooks, OBS integration, C# scripting, donations and chat events. | Steep learning curve. Not a simple “add streamer + webhook” experience. |
 | **Siddhart/Twitch-Discord-Bot** | Self-hosted OSS bot | Twitch | Official Twitch API, unlimited streamers, role tagging, message updates every 10 minutes, cron-configurable. | Requires Discord bot token plus Twitch client ID/secret. Config-file setup, one Discord channel per deployment. |
 | **alepouna/twitch-discord-alerts** | Self-hosted OSS helper | Anything Streamer.bot supports | Small Node helper that triggers from Streamer.bot. | Manual Streamer.bot/Node setup, one streamer, not a standalone product. |
-| **Twitch Live to Discord** | Local webhook app | Twitch | No bot/OAuth/API registration, multi-streamer + multi-destination routing, per-destination templates and live preview, optional streamer ping, persisted dedupe, cross-platform dashboard, MIT. | Polling-based, local app must stay running, no role pings/live roles/schedule sync, no official Twitch API mode yet, no macOS/Linux tray. |
+| **Twitch Live to Discord** | Local webhook app + Docker | Twitch | No bot/OAuth/API registration, multi-streamer + multi-destination routing, per-destination templates and live preview, streamer + role pings, persisted dedupe, game/title/viewer filters, quiet hours/cooldowns, Docker/self-host, cross-platform dashboard, MIT. | Polling-based, local app or self-hosted container must stay running, no live roles/schedule sync/stream-end cleanup, no official Twitch API mode yet, no macOS/Linux tray. |
 
 ## Feature comparison
 
@@ -56,16 +56,16 @@ generic bot; **No** = not a core feature.
 | Per-destination message templates | Partial | Yes | Limited | Yes via actions | **Yes** |
 | Live Discord preview | Dashboard | No | No | No | **Yes** |
 | Optional streamer ping | Role/user mentions | Role/user mentions | Partial | Yes | **Yes** |
-| Role pings | Yes | Yes | Partial | Yes | No |
-| Game/title filters | Yes | Templates | Zapier filters | Yes via actions | No |
-| Quiet hours/cooldowns | Cooldowns | Templates | Limited | Yes via actions | No |
+| Role pings | Yes | Yes | Partial | Yes | **Yes** |
+| Game/title filters | Yes | Templates | Zapier filters | Yes via actions | **Yes** |
+| Quiet hours/cooldowns | Cooldowns | Templates | Limited | Yes via actions | **Yes** |
 | Stream-end cleanup | Yes | No | No | Yes via actions | No |
 | Message updates while live | Partial | No | No | Yes via actions | No |
 | Live roles | Yes | Partial | No | Yes via actions | No |
 | Schedule sync | Yes (Pro) | No | No | Yes via actions | No |
 | Twitch Teams | Yes | No | No | No | No |
-| Self-hosted/local-first | No | Yes | No | Yes | **Yes** |
-| Cloud 24/7 uptime | Yes | Yes | Yes | No | No |
+| Self-hosted/local-first | No | Yes | No | Yes | **Yes + Docker** |
+| Cloud 24/7 uptime | Yes | Yes | Yes | No | **Self-host/Docker** |
 | Persisted per-stream dedupe | Assumed | Assumed | Not guaranteed | Manual/action-dependent | **Yes, persisted** |
 | Free without streamer limits | No (5 free) | Yes-ish | Task limits | Yes | **Yes** |
 | Installer/polish for non-technical users | Yes | Dashboard | Yes | Desktop app | Partial |
@@ -84,8 +84,16 @@ generic bot; **No** = not a core feature.
 - **Cross-platform dashboard.** Windows, Linux, and macOS use the same UI.
 - **Dedupe that survives restarts.** The last stream ID is stored per
   destination, so manual checks and restarts do not repost the same stream.
-- **Optional streamer ping with narrow allowed mentions.** `{discord_mention}`
-  allows only the configured user; `@everyone` and roles remain blocked.
+- **Optional streamer and role pings with narrow allowed mentions.**
+  `{discord_mention}` and `{role_mentions}` allow only configured IDs;
+  `@everyone` and unconfigured roles remain blocked.
+- **Reliable delivery.** Twitch retries with jittered backoff, Discord 429s wait
+  for the server delay, and permanently invalid webhooks are marked instead of
+  retried forever.
+- **Notification rules.** Game/title filters, viewer thresholds, quiet hours,
+  allowed days, cooldowns, and alert delay are built in per streamer.
+- **Docker/self-host.** A multi-arch image, persistent volume, and `/healthz`
+  make 24/7 operation practical without a cloud account.
 - **MIT and free.** No streamer-count paywall.
 
 ## Biggest gaps and opportunities
@@ -95,13 +103,14 @@ generic bot; **No** = not a core feature.
 Cloud bots are always online. A local desktop app is not when the machine sleeps,
 reboots, or is closed. This is the largest product gap.
 
-Opportunity:
+**Delivered in 2.2.0:** Docker image, compose volume, `/healthz`, and
+cross-platform single-instance locking. A NAS/VPS/Raspberry Pi can now run the
+app around the clock.
 
-- Docker image + compose for VPS/NAS/Raspberry Pi.
-- Healthcheck endpoint and optional external heartbeat.
+Remaining opportunity:
+
+- Optional external heartbeat alerting.
 - Service installers for Windows/Linux/macOS.
-- Clear dashboard health status: last check, next check, last error.
-- Cross-platform single-instance lock to prevent duplicate processes.
 
 ### 2. Real-time or more reliable Twitch detection
 
@@ -127,26 +136,17 @@ Our streamer ping is a start. Communities also need a Live role or an
 `@everyone`/`@here` option. Webhooks can mention roles with a scoped
 `allowed_mentions.roles` list.
 
-Opportunities:
-
-- Per-destination role ID pings.
-- Separate streamer ping, role ping, and optional `@everyone`/`@here`.
-- Explicit confirmation for broad mentions.
-- Tests that only intended IDs are allowed.
+**Delivered in 2.2.0:** per-destination role IDs, `{role_mentions}`, separate
+streamer/role ping toggles, preview ping summaries, and an explicit
+everyone/here opt-in with confirmation.
 
 ### 4. Notification rules and filters
 
 Competitors offer game/title filtering and cooldowns. These are cheap to add and
 high value for busy communities.
 
-Opportunities:
-
-- Include/exclude games/categories.
-- Title keyword allow/deny rules.
-- Minimum viewers.
-- Quiet hours, allowed days, per-streamer cooldown.
-- Alert delay (e.g. only after 5 minutes live).
-- “Only first stream of the day.”
+**Delivered in 2.2.0:** game/title includes and excludes, minimum viewers,
+quiet hours, allowed days, cooldowns, first-stream-of-day, and alert delay.
 
 ### 5. Stream lifecycle actions
 
@@ -216,12 +216,11 @@ simplicity, message control, multi-destination routing, privacy, and reliability
 
 The most valuable next steps are:
 
-1. Docker/self-host and health checks.
-2. Retry/backoff and hard reliability guarantees.
-3. Role pings.
-4. Filters/quiet hours.
-5. Stream-end cleanup and message updates.
-6. Installer/signing/auto-update.
+1. Stream-end cleanup and live message updates.
+2. Installer/signing/auto-update.
+3. Official Twitch API/Helix mode.
+4. Secret storage and config export UX.
+5. YouTube/Kick and Twitch Teams.
 
 See [roadmap.md](roadmap.md) for the proposed releases and acceptance criteria.
 

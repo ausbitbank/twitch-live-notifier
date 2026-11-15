@@ -1,7 +1,7 @@
 $ErrorActionPreference = "Stop"
 Set-Location $PSScriptRoot
 
-$Version = if ($env:VERSION) { $env:VERSION } else { "2.1.0" }
+$Version = if ($env:VERSION) { $env:VERSION } else { "2.2.0" }
 New-Item -ItemType Directory -Force -Path dist | Out-Null
 Remove-Item -Recurse -Force -Path dist/docs -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force -Path dist/docs | Out-Null

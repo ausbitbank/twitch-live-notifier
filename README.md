@@ -23,6 +23,7 @@ posts where, and tune each message with placeholders and a live Discord preview.
 
 - **Cross-platform by design.** Windows, Linux, and macOS use the same
   dashboard and monitor. Windows gets an optional tray icon and startup entry.
+  Run it 24/7 on a VPS, NAS, or Raspberry Pi with Docker.
 - **No Twitch login, bot, or API registration.** Just a Twitch username and a
   Discord webhook.
 - **No hardcoded limits.** Follow every channel your community cares about and
@@ -253,16 +254,19 @@ Settings are stored in the current user's profile:
 | Windows | `%APPDATA%\TwitchLiveNotifier\config.json` |
 | Linux | `~/.config/TwitchLiveNotifier/config.json` |
 | macOS | `~/Library/Application Support/TwitchLiveNotifier/config.json` |
+| Docker | `/data/config.json` in the `twitch-live-data` volume |
 
 The file contains your streamers, labelled webhook URLs, routing choices,
-templates, and the last stream posted to each destination. A Discord webhook URL
-is a credential: anyone with it can post to that channel. Keep the file private
-and do not share unmasked screenshots or bug reports.
+templates, filters, and the last stream posted to each destination. A Discord
+webhook URL is a credential: anyone with it can post to that channel. Keep the
+file private and do not share unmasked screenshots or bug reports.
 
 The app has no analytics, telemetry, or auto-updater. It talks directly to
-Twitch and Discord. The dashboard is served only on `127.0.0.1` and is not
-exposed to your network. Twitch is checked through Twitch's public web GraphQL
-endpoint; no Twitch account or OAuth token is used.
+Twitch and Discord. By default the dashboard is served only on `127.0.0.1` and
+is not exposed to your network. The Docker image listens on `0.0.0.0` inside the
+container, but the compose file publishes it on loopback by default; see
+[docs/docker.md](docs/docker.md) before exposing it. Twitch is checked through
+Twitch's public web GraphQL endpoint; no Twitch account or OAuth token is used.
 
 ## Running in the background on Linux/macOS
 
@@ -384,8 +388,16 @@ macOS builds:
 ./build-macos.sh
 ```
 
-The release workflow builds Windows x64, Linux x64, and macOS Intel/Apple
-Silicon artifacts from a tag.
+Docker:
+
+```bash
+docker build -t twitch-live-notifier .
+# or
+docker compose up -d --build
+```
+
+The release workflow builds Windows x64, Linux x64, macOS Intel/Apple Silicon
+artifacts, plus multi-arch Docker images from a tag.
 
 To regenerate the app icon, web assets, and Windows resources after changing
 the artwork or version:
@@ -401,17 +413,24 @@ This requires `go-winres` and ImageMagick.
 - Requires an internet connection.
 - Twitch can change its private web endpoint or public web client ID at any
   time. If that happens, the app will need an update.
+- Polling is every two minutes by default, so very short streams can be missed.
 - Discord webhook URLs are stored locally in the settings file in plain text.
+- The dashboard has no login. Keep it on loopback, behind an SSH tunnel, or
+  behind an authenticating reverse proxy. Do not publish port 8787 directly.
 - The Windows executable is unsigned, so Windows SmartScreen may warn on first
   launch.
 - Windows includes a native tray icon. Linux and macOS currently run as a local
   browser dashboard and do not have native tray integration.
+- Stream-end cleanup, live message edits, and live-role automation are not yet
+  implemented.
 - Prebuilt artifacts are 64-bit Windows/Linux and Intel/Apple Silicon macOS.
-  Other Go targets can be built from source.
+  Docker images cover `linux/amd64` and `linux/arm64`; other Go targets can be
+  built from source.
 
 ## Roadmap and research
 
 - [Public roadmap](docs/roadmap.md)
+- [Docker and self-hosting](docs/docker.md)
 - [Competitive research and sources](docs/competitive-research.md)
 - [Clean-session project brief](docs/project-context.md)
 

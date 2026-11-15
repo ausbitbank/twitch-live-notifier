@@ -1,6 +1,6 @@
 # Roadmap
 
-**Current baseline:** 2.1.0  
+**Current baseline:** 2.2.0  
 **Research input:** [competitive-research.md](competitive-research.md)
 
 ## Product principles
@@ -43,6 +43,9 @@ Goal: make the app dependable enough to recommend to a real community.
 
 ### P0: Docker / self-host package
 
+**Shipped in 2.2.0.** Multi-stage image, compose volume, `/healthz`, Docker
+guide, and multi-arch GHCR publishing are live.
+
 Why: a desktop app cannot match cloud uptime when the machine sleeps. A small
 Docker image lets a streamer run it on a VPS, NAS, or Raspberry Pi.
 
@@ -65,6 +68,9 @@ Acceptance criteria:
 
 ### P0: Retry and rate-limit handling
 
+**Shipped in 2.2.0.** Twitch retries, Discord 429 handling, permanent-error
+classification, and destination health state are live.
+
 Why: a transient Twitch or Discord failure should not lose an alert or hammer
 the APIs.
 
@@ -86,6 +92,9 @@ Acceptance criteria:
 
 ### P0: Cross-platform single instance
 
+**Shipped in 2.2.0.** Unix `flock` and the Windows named mutex are used by
+`--serve`, `--check`, and the tray app.
+
 Why: two instances monitoring the same config can race and double-post.
 
 Deliverables:
@@ -103,6 +112,9 @@ Acceptance criteria:
 - A stale lock after a crash does not block a restart forever.
 
 ### P0: Role pings and mention controls
+
+**Shipped in 2.2.0.** Role IDs, ping toggles, scoped `allowed_mentions`, and an
+explicit everyone/here opt-in are live.
 
 Why: communities often want to ping an `@Live` role, not only the streamer.
 
@@ -124,6 +136,9 @@ Acceptance criteria:
 - Preview clearly shows what will ping.
 
 ### P0/P1: Notification filters and quiet hours
+
+**Shipped in 2.2.0.** Game/title rules, minimum viewers, quiet hours, allowed
+days, cooldowns, first-stream-of-day, and alert delay are live.
 
 Why: competitors offer game/title filters and communities need control over
 when alerts fire.
@@ -285,11 +300,14 @@ This must be a separate opt-in mode with OAuth and clear permission scopes.
 
 ## Cross-cutting engineering work
 
-- Add health endpoint and structured local logs with webhook redaction.
-- Add `context.Context` cancellation to network calls and shutdown.
-- Add Discord webhook health state and “disable after repeated failure” UI.
+- ~~Add health endpoint and structured local logs with webhook redaction.~~ Done
+  in 2.2.0.
+- Add `context.Context` cancellation to remaining network calls and shutdown.
+- ~~Add Discord webhook health state and “disable after repeated failure” UI.~~
+  Done in 2.2.0.
 - Add integration tests for multi-destination, retries, filters, cleanup, and
-  role mentions.
+  role mentions. Multi-destination, retries, filters, and role mentions are
+  covered.
 - Expand Playwright UI tests for onboarding, settings, and failure states.
 - Keep `go vet` for Windows/Linux/macOS and race tests in CI.
 - Evaluate code signing and reproducible builds before a wider launch.

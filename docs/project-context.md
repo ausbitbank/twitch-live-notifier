@@ -7,8 +7,8 @@ context.
 
 - **Local path:** `/mnt/arty/twitch-live-notifier`
 - **GitHub:** <https://github.com/ausbitbank/twitch-live-notifier>
-- **Current version:** 2.1.0
-- **Current release:** <https://github.com/ausbitbank/twitch-live-notifier/releases/tag/v2.1.0>
+- **Current version:** 2.2.0
+- **Current release:** <https://github.com/ausbitbank/twitch-live-notifier/releases/tag/v2.2.0>
 - **Branch:** `main`
 - **License:** MIT
 
@@ -24,8 +24,11 @@ Core promises:
 - Per-destination message templates with placeholders and a live Discord preview.
 - Once-per-stream, per-destination dedupe that survives restarts.
 - Optional per-streamer Discord ping using `{discord_mention}`.
+- Optional per-destination role pings using `{role_mentions}`.
+- Game/title/viewer filters, quiet hours, allowed days, cooldowns, and delays.
 - Local-first privacy: dashboard and settings run on `127.0.0.1`.
 - Windows tray app; Linux/macOS dashboard mode (`--serve`).
+- Docker/self-host mode with `/healthz` and multi-arch images.
 
 ## Stack
 
@@ -33,26 +36,34 @@ Core promises:
 - Embedded HTML/CSS/JS dashboard via `go:embed web`.
 - Native Win32 tray/message box code for Windows.
 - Browser dashboard and HTTP API for all platforms.
-- JSON config in the per-user config directory.
+- JSON config in the per-user config directory (or `/data` in Docker).
 - Windows resources (icon/version/manifest) from `rsrc_windows_amd64.syso`.
 
 ## Architecture map
 
 | File | Responsibility |
 | --- | --- |
-| `main.go` | CLI parsing, mode dispatch, usage, `--check`, `--serve`, `--background` |
-| `app.go` | App state, monitor loop, Twitch checks, routing, dedupe, mutations, activity |
-| `config.go` | Config types, defaults, migration, validation, persistence, Discord ID normalization |
-| `server.go` | Local HTTP server, JSON API, embedded dashboard, security headers, quit/health |
-| `templates.go` | Placeholders, rendering, Discord payload builder, test payload |
-| `twitch.go` | Twitch public web GraphQL client |
-| `discord.go` | Discord webhook POST, payload types, error formatting |
+| `main.go` | CLI parsing, mode dispatch, usage, `--check`, `--serve`, `--background`, `--healthcheck` |
+| `app.go` | App state, monitor loop, Twitch checks, routing, dedupe, filters, mutations, activity |
+| `config.go` | Config types, defaults, migration, validation, persistence, Discord ID/role normalization |
+| `filters.go` | Per-streamer filter normalization, validation, and evaluation |
+| `health.go` | `/healthz` payload, monitor liveness rules, healthcheck CLI probe |
+| `retry.go` | Exponential backoff with jitter and context-aware retry sleeps |
+| `server.go` | Local HTTP server, JSON API, embedded dashboard, security headers, listen/health/quit |
+| `templates.go` | Placeholders, rendering, mention scoping, Discord payload builder, test payload |
+| `twitch.go` | Twitch public web GraphQL client with bounded retries |
+| `discord.go` | Discord webhook POST, 429 handling, payload types, error classification |
+| `instance_lock.go` | Shared lock path resolution |
+| `instance_lock_unix.go` | Advisory `flock` single-instance lock for Linux/macOS |
+| `instance_lock_windows.go` | Named-mutex single-instance lock for Windows |
 | `platform_windows.go` | Windows shell/file/startup/console helpers |
 | `tray_windows.go` | Win32 tray icon, menu, hidden window, single-instance mutex |
 | `platform_other.go` | Linux/macOS browser/folder/autostart stubs, desktop-mode error |
 | `web/` | Embedded dashboard (`index.html`, `app.js`, `styles.css`, icon, mascot) |
+| `Dockerfile` | Multi-stage amd64/arm64 image with healthcheck |
+| `docker-compose.yml` | Persistent volume, loopback port, timezone, restart policy |
 | `winres/` | Icon PNGs and Windows version/manifest source |
-| `docs/` | Screenshots, competitive research, roadmap, this hand-off |
+| `docs/` | Screenshots, Docker guide, competitive research, roadmap, this hand-off |
 | `build.sh` | Cross-compile Windows from Linux/macOS |
 | `build.ps1` | Windows PowerShell build |
 | `build-linux.sh` | Native Linux dashboard binary |
@@ -64,35 +75,54 @@ Core promises:
 - On start, the app begins monitoring after ~1.5 seconds (unless paused).
 - Default check interval: **120 seconds**; minimum 30 seconds.
 - Checks all enabled streamers, then posts to each assigned destination.
+- Twitch 5xx, 429, timeout, and network failures retry up to three times with
+  jittered exponential backoff. `404`/API errors do not retry.
 - A destination stores `last_stream_id` and `last_posted_at`; matching stream IDs
   are skipped.
 - Manual **Check all** also respects dedupe.
 - A new Twitch stream ID posts again.
 - A failed Discord post does not record the stream ID, so it retries on the next
   check.
+- Discord `429` honors `Retry-After`/`retry_after` and retries once.
+- Discord `401`/`403`/`404` marks the destination invalid and skips it until the
+  URL changes or a test succeeds. Other destinations keep working.
 - Config is saved after profile changes and successful posts.
 - Windows runs in the tray; Linux/macOS run the dashboard in the foreground.
 - Optional streamer Discord ID renders `{discord_mention}` as `<@id>`.
-- `allowed_mentions` uses `users: [id]` only, so `@everyone` and roles are
-  blocked.
+- Optional destination role IDs render `{role_mentions}` as `<@&id>`.
+- `allowed_mentions` always includes an explicit `parse` list; `users` and
+  `roles` contain only configured IDs. `@everyone`/`@here` require an explicit
+  per-destination opt-in.
+- Per-streamer filters evaluate game/title rules, minimum viewers, delay,
+  quiet hours, allowed days, cooldown, and first-stream-of-day. Excludes win.
+- Filtered streams still update live status and do not record dedupe.
+- One instance per settings file. Unix uses `flock`; Windows uses the named
+  mutex. Stale lock files do not block because the kernel releases the lock.
+- `/healthz` is healthy while checks are current, unhealthy when stale, and
+  healthy when monitoring is intentionally paused.
 
 ## Current endpoints/modes
 
 - `GET /api/state` — full dashboard state.
-- `POST /api/channels`, `PUT/DELETE /api/channels/{id}`.
+- `GET /healthz` — monitor health, last check, counts; HTTP 200/503.
+- `POST /api/channels`, `PUT/DELETE /api/channels/{id}` (enabled, Discord ID,
+  filters).
 - `POST /api/channels/{id}/check`, `/sample`.
 - `PUT /api/channels/{id}/destinations`.
-- `POST /api/webhooks`, `PUT/DELETE /api/webhooks/{id}`.
+- `POST /api/webhooks`, `PUT/DELETE /api/webhooks/{id}` (label, URL, roles,
+  template, enabled).
 - `POST /api/webhooks/{id}/test`.
-- `POST /api/preview`.
+- `POST /api/preview` (template, channel, label, role IDs).
 - `POST /api/check`, `PUT /api/settings`, `/api/open-data-folder`, `/api/quit`.
 - Browser dashboard at `http://127.0.0.1:8787/` (falls back to the next port).
+  `--listen` binds an explicit address; Docker uses `0.0.0.0:8787` internally.
 
 ## Settings locations
 
 - **Windows:** `%APPDATA%\TwitchLiveNotifier\config.json`
 - **Linux:** `~/.config/TwitchLiveNotifier/config.json`
 - **macOS:** `~/Library/Application Support/TwitchLiveNotifier/config.json`
+- **Docker:** `/data/config.json` in the `twitch-live-data` volume
 
 ## Commands
 
@@ -107,6 +137,8 @@ go test -race ./...
 ./build.sh          # Windows exe into dist/
 ./build-linux.sh    # Linux dashboard binary
 ./build-macos.sh    # macOS Intel + Apple Silicon binaries
+docker build -t twitch-live-notifier .
+docker compose up -d --build
 ```
 
 Local artifacts are written under `dist/` and are ignored by Git.
@@ -124,6 +156,7 @@ TwitchLiveNotifier.exe
 TwitchLiveNotifier.exe --background
 TwitchLiveNotifier.exe --check
 TwitchLiveNotifier.exe --serve
+TwitchLiveNotifier.exe --healthcheck
 ```
 
 ## Release flow
@@ -135,22 +168,24 @@ TwitchLiveNotifier.exe --serve
   - installs `go-winres`,
   - builds Windows, Linux, and macOS binaries,
   - creates Windows ZIP, Linux tar.gz, macOS tar.gz,
-  - uploads raw binaries plus archives and `SHA256SUMS.txt`.
-- Current tag: `v2.1.0`.
+  - uploads raw binaries plus archives and `SHA256SUMS.txt`,
+  - builds and pushes `linux/amd64` + `linux/arm64` images to GHCR.
+- Current tag: `v2.2.0`.
 
 ## Known constraints
 
 - Polling is every 2 minutes by default; very short streams can be missed.
 - Twitch checks use the public web GraphQL endpoint, not the official API.
-- No role pings, filters, quiet hours, stream-end cleanup, live message updates,
-  live roles, schedule sync, or Twitch Teams yet.
-- Windows has the native tray and single-instance mutex. Linux/macOS have no
-  native tray and no cross-platform single-instance lock yet.
+- No stream-end cleanup, live message updates, live roles, schedule sync, or
+  Twitch Teams yet.
+- Windows has the native tray. Linux/macOS have no native tray.
+- All platforms now prevent multiple instances per settings file.
 - Webhook URLs are stored in plain text in the per-user config.
 - Windows binary is unsigned.
-- No Docker/self-host package or healthcheck endpoint yet.
-- No retry/backoff for Discord 429 or Twitch 5xx yet.
+- The dashboard has no authentication. Keep `--listen`/Docker port on loopback or
+  use an authenticating reverse proxy.
 - No official Twitch API/EventSub mode.
+- Stream lifecycle features are next (v2.3).
 
 ## Do not regress
 
@@ -166,7 +201,8 @@ TwitchLiveNotifier.exe --serve
 
 1. [Competitive research](competitive-research.md)
 2. [Roadmap](roadmap.md)
-3. [README](../README.md)
+3. [Docker and self-hosting](docker.md)
+4. [README](../README.md)
 
 ## Fresh session start prompt
 
@@ -174,18 +210,17 @@ TwitchLiveNotifier.exe --serve
 We are continuing work on Twitch Live to Discord at
 /mnt/arty/twitch-live-notifier. Read README.md, docs/project-context.md,
 docs/competitive-research.md, and docs/roadmap.md first. The current release is
-v2.1.0 on main.
+v2.2.0 on main.
 
-Start with the P0 v2.2 roadmap item: Docker/self-host package plus a healthcheck
-endpoint. Then proceed through the remaining v2.2 P0 items in roadmap order:
-retry/backoff + Discord 429 handling, cross-platform single-instance lock, role
-pings, and notification filters/quiet hours as time allows.
+Start with the v2.3 P1 roadmap item: stream-end cleanup and message updates.
+Then continue through live message updates, per-route templates, thread targets,
+and secret storage as time allows.
 
 Before coding, restate the acceptance criteria and make a short implementation
 plan. Preserve the core behavior: no bot/OAuth required, multi-streamer and
 multi-destination routing, per-destination templates and live preview, persisted
-per-stream/per-destination dedupe, and blocked @everyone/roles unless explicitly
-configured.
+per-stream/per-destination dedupe, scoped mentions, filters/quiet hours, and
+blocked @everyone/roles unless explicitly configured.
 
 Implement one slice at a time. Add/update tests, run go test ./..., go vet for
 Linux and Windows, and race tests. Run UI/Playwright smoke tests where relevant.

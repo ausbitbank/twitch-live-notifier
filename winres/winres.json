@@ -17,7 +17,7 @@
       "0409": {
         "identity": {
           "name": "TwitchLiveNotifier",
-          "version": "2.1.0.0"
+          "version": "2.2.0.0"
         },
         "description": "Twitch Live to Discord",
         "minimum-os": "win10",
@@ -41,20 +41,20 @@
     "#1": {
       "0000": {
         "fixed": {
-          "file_version": "2.1.0.0",
-          "product_version": "2.1.0.0"
+          "file_version": "2.2.0.0",
+          "product_version": "2.2.0.0"
         },
         "info": {
           "0409": {
             "Comments": "Post your Twitch live alerts to Discord.",
             "CompanyName": "Twitch Live to Discord contributors",
             "FileDescription": "Twitch Live to Discord",
-            "FileVersion": "2.1.0",
+            "FileVersion": "2.2.0",
             "InternalName": "TwitchLiveNotifier",
             "LegalCopyright": "Copyright (c) 2026 Twitch Live to Discord contributors. MIT License.",
             "OriginalFilename": "TwitchLiveNotifier.exe",
             "ProductName": "Twitch Live to Discord",
-            "ProductVersion": "2.1.0"
+            "ProductVersion": "2.2.0"
           }
         }
       }

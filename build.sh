@@ -2,7 +2,7 @@
 set -euo pipefail
 cd -- "$(dirname -- "$0")"
 
-version="${VERSION:-2.1.0}"
+version="${VERSION:-2.2.0}"
 rm -rf dist/docs
 mkdir -p dist/docs
 
