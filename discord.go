@@ -15,7 +15,8 @@ import (
 
 const (
 	discordMaxAttempts    = 2
-	discordMaxRetryDelay  = 60 * time.Second
+	discordInlineRetryMax = 10 * time.Second
+	discordMaxDefer       = time.Hour
 	discordDefaultRetryIn = time.Second
 )
 
@@ -209,6 +210,10 @@ func discordRequest(ctx context.Context, method, rawURL string, payload any) ([]
 		body = encoded
 	}
 
+	if err := globalDiscordRateLimiter.wait(ctx, rawURL); err != nil {
+		return nil, err
+	}
+
 	var lastErr error
 	for attempt := 0; attempt < discordMaxAttempts; attempt++ {
 		var reader io.Reader
@@ -230,6 +235,7 @@ func discordRequest(ctx context.Context, method, rawURL string, payload any) ([]
 			return nil, fmt.Errorf("could not reach Discord: %s", networkErrorText(err))
 		}
 
+		globalDiscordRateLimiter.observe(rawURL, resp.Header)
 		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
 		resp.Body.Close()
 		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
@@ -242,16 +248,23 @@ func discordRequest(ctx context.Context, method, rawURL string, payload any) ([]
 			RetryAfter: discordRetryAfter(resp, respBody),
 		}
 		lastErr = httpErr
+		if resp.StatusCode == http.StatusTooManyRequests {
+			globalDiscordRateLimiter.deferFor(rawURL, httpErr.RetryAfter)
+		}
 		if resp.StatusCode != http.StatusTooManyRequests || attempt == discordMaxAttempts-1 {
 			return nil, httpErr
 		}
 
 		delay := httpErr.RetryAfter
 		if delay <= 0 {
-			delay = discordDefaultRetryIn
+			// Spread fallback retries when Discord does not tell us how long to
+			// wait. Server-provided delays are respected exactly.
+			delay = backoffDelay(0, discordDefaultRetryIn, 2*discordDefaultRetryIn)
 		}
-		if delay > discordMaxRetryDelay {
-			delay = discordMaxRetryDelay
+		if delay > discordInlineRetryMax {
+			// Do not hold the streamer check open for a long window. The caller
+			// persists RetryUntil and retries on a later check.
+			return nil, httpErr
 		}
 		if sleepErr := retrySleep(ctx, delay); sleepErr != nil {
 			return nil, sleepErr

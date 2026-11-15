@@ -277,8 +277,16 @@ Any other role mention is inert, even if someone types it into the template.
 - Live message edits and stream-end cleanup use the stored message ID, original
   webhook URL, and thread ID. A cleanup failure does not block the next stream.
 - Failed Twitch checks retry a few times with jittered backoff. Discord `429`
-  responses wait for Discord's `Retry-After` delay and retry once. Edit and
-  cleanup requests use the same retry policy.
+  responses are handled per destination:
+  - short delays are retried inline once;
+  - long delays are persisted as a `retry_until` window and the destination is
+    skipped until it expires;
+  - proactive `X-RateLimit-Remaining` / `X-RateLimit-Reset-After` headers are
+    honored, and fallback delays are jittered.
+  - A scheduled or manual check has a 15-minute hard timeout.
+- When a destination is rate limited, the destination card and the streamer's
+  routing row show **Rate limited** and the retry time. A rate-limited post does
+  not record dedupe, so it is retried after the window without losing the alert.
 - A webhook that returns `401`, `403`, or `404` is marked **Invalid** and
   skipped so the app does not hammer Discord. Fix the URL and use **Test
   webhook** to clear it. Other destinations keep working.

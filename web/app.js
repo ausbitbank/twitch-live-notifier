@@ -178,6 +178,23 @@
     return (state?.config?.channels || []).filter((channel) => assignedWebhookIDs(channel).includes(webhookId)).length;
   }
 
+  function webhookRetryUntil(webhookId) {
+    const now = Date.now();
+    let latest = 0;
+    for (const channel of state?.config?.channels || []) {
+      for (const destination of channel.destinations || []) {
+        if (destination.webhook_id !== webhookId) {
+          continue;
+        }
+        const time = destination.retry_until ? new Date(destination.retry_until).getTime() : 0;
+        if (Number.isFinite(time) && time > now && time > latest) {
+          latest = time;
+        }
+      }
+    }
+    return latest;
+  }
+
   function storedDashboardToken() {
     try {
       return sessionStorage.getItem("twitch-live-token") || "";
@@ -533,11 +550,14 @@
       ? `<div class="destination-checks">${webhooks.map((webhook) => {
           const destination = (channel.destinations || []).find((item) => item.webhook_id === webhook.id);
           const customTemplate = Boolean(destination?.template);
+          const retryAt = destination?.retry_until ? new Date(destination.retry_until).getTime() : 0;
+          const rateLimited = Number.isFinite(retryAt) && retryAt > Date.now();
           return `<div class="destination-check-row">
             <label class="destination-check ${webhook.enabled ? "" : "is-disabled"}">
               <input type="checkbox" data-action="toggle-destination" data-channel="${channel.id}" data-webhook="${webhook.id}" ${assigned.has(webhook.id) ? "checked" : ""}>
               <span>${escapeHTML(webhook.label)}</span>
               ${webhook.enabled ? "" : '<span class="badge badge-disabled">Paused</span>'}
+              ${rateLimited ? '<span class="badge badge-warn">Rate limited</span>' : ""}
             </label>
             ${assigned.has(webhook.id) ? `<button type="button" class="btn btn-small btn-ghost" data-action="edit-route-template" data-channel="${channel.id}" data-webhook="${webhook.id}">${icon("edit")} ${customTemplate ? "Custom template" : "Template"}</button>` : ""}
           </div>`;
@@ -615,9 +635,16 @@
     const connected = webhookConnectionCount(webhook.id);
     const template = webhook.template || state.default_template;
     const summary = truncate(template.content || template.embed_title || template.embed_description || "No message text", 120);
+    const retryAt = webhookRetryUntil(webhook.id);
+    const rateLimited = retryAt > 0;
     const badge = webhook.invalid
       ? '<span class="badge badge-invalid">Invalid</span>'
-      : `<span class="badge ${webhook.enabled ? "badge-enabled" : "badge-disabled"}">${webhook.enabled ? "Active" : "Paused"}</span>`;
+      : rateLimited
+        ? '<span class="badge badge-warn">Rate limited</span>'
+        : `<span class="badge ${webhook.enabled ? "badge-enabled" : "badge-disabled"}">${webhook.enabled ? "Active" : "Paused"}</span>`;
+    const rateLimitLine = rateLimited
+      ? `<div class="meta" style="margin-top:6px">Discord asked us to wait; retrying ${escapeHTML(formatRelative(new Date(retryAt).toISOString()))}.</div>`
+      : "";
     const error = webhook.last_error
       ? `<div class="${webhook.invalid ? "channel-error" : "warning-box"}" style="margin-top:10px">${icon("bell")} <span>${escapeHTML(webhook.last_error)}${webhook.last_error_at ? ` · ${escapeHTML(formatRelative(webhook.last_error_at))}` : ""}</span></div>`
       : "";
@@ -652,6 +679,7 @@
         <div class="template-preview-line"><strong>Message:</strong> ${escapeHTML(summary)}</div>
         ${(webhook.role_ids || []).length ? `<div class="meta" style="margin-top:6px">Role pings: ${(webhook.role_ids || []).map((id) => `<code class="discord-id">${escapeHTML(id)}</code>`).join(" ")}</div>` : ""}
         ${lifecycleLine}
+        ${rateLimitLine}
         <div class="meta" style="margin-top:8px">${connected} streamer${connected === 1 ? "" : "s"} connected${lastSuccess}</div>
         ${error}
         <div class="destination-actions">
