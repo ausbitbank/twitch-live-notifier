@@ -7,5 +7,5 @@ var Version = "2.1.0"
 
 const (
 	configDirName = "TwitchLiveNotifier"
-	configVersion = 2
+	configVersion = 3
 )

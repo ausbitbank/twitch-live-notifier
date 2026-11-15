@@ -413,6 +413,48 @@ func TestSetChannelDiscordID(t *testing.T) {
 	}
 }
 
+func TestFilteredStreamStillUpdatesStatus(t *testing.T) {
+	twitch := newTwitchTestServer(t, liveTwitchJSON)
+	setTwitchTestURL(t, twitch)
+	discord, capture := newDiscordCapture(t)
+
+	app := newTestApp(t)
+	injectWebhook(t, app, "Community", discord.URL+"/api/webhooks/1/token")
+	channel, err := app.AddChannel("teststreamer")
+	if err != nil {
+		t.Fatalf("AddChannel returned error: %v", err)
+	}
+	if err := app.SetChannelFilters(channel.ID, Filters{ExcludeGames: []string{"Just Chatting"}}); err != nil {
+		t.Fatalf("SetChannelFilters returned error: %v", err)
+	}
+
+	summary, err := app.CheckNow(context.Background())
+	if err != nil {
+		t.Fatalf("CheckNow returned error: %v", err)
+	}
+	if summary.Posted != 0 || summary.Live != 1 || capture.count() != 0 {
+		t.Fatalf("summary = %+v, calls = %d", summary, capture.count())
+	}
+	status := app.State().Statuses[channel.ID]
+	if !status.Live || status.FilterReason == "" {
+		t.Fatalf("status = %+v", status)
+	}
+	if cfg := app.ConfigSnapshot(); cfg.Channels[0].Destinations[0].LastStreamID != "" {
+		t.Fatalf("filtered stream recorded a last stream ID: %+v", cfg.Channels[0].Destinations[0])
+	}
+
+	if err := app.SetChannelFilters(channel.ID, Filters{}); err != nil {
+		t.Fatalf("clearing filters returned error: %v", err)
+	}
+	summary, err = app.CheckNow(context.Background())
+	if err != nil {
+		t.Fatalf("second CheckNow returned error: %v", err)
+	}
+	if summary.Posted != 1 || capture.count() != 1 {
+		t.Fatalf("second summary = %+v, calls = %d", summary, capture.count())
+	}
+}
+
 func TestInvalidDestinationIsMarkedAndSkipped(t *testing.T) {
 	twitch := newTwitchTestServer(t, liveTwitchJSON)
 	setTwitchTestURL(t, twitch)

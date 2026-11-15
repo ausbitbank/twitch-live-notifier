@@ -520,6 +520,14 @@
         <div class="channel-body">
           ${liveBlock}
           ${status.error ? `<div class="channel-error">${escapeHTML(status.error)}</div>` : ""}
+          ${status.live && status.filter_reason ? `<div class="warning-box">${icon("bell")}<span>Not posting: ${escapeHTML(status.filter_reason)}</span></div>` : ""}
+          <div>
+            <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:7px">
+              <div class="field-label">Alert filters</div>
+              <button class="btn btn-small btn-ghost" data-action="edit-filters" data-channel="${channel.id}">${icon("settings")} Edit filters</button>
+            </div>
+            <div class="chips">${filterChips(channel.filters).map((chip) => `<span class="chip">${escapeHTML(chip)}</span>`).join("") || `<span class="meta">No filters — every live stream alerts.</span>`}</div>
+          </div>
           <div>
             <div class="field-label" style="margin-bottom:7px">Post to</div>
             ${destinationControls}
@@ -689,6 +697,51 @@
 
   function templatePingRoles(template) {
     return template?.ping_roles !== false;
+  }
+
+  const DAY_NAMES = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+
+  function listFrom(value) {
+    return String(value || "")
+      .split(/[\n,]+/)
+      .map((part) => part.trim())
+      .filter(Boolean);
+  }
+
+  function filterChips(filters) {
+    const f = filters || {};
+    const chips = [];
+    if ((f.include_games || []).length) {
+      chips.push(`Game: ${f.include_games.join(", ")}`);
+    }
+    if ((f.exclude_games || []).length) {
+      chips.push(`Not game: ${f.exclude_games.join(", ")}`);
+    }
+    if ((f.include_titles || []).length) {
+      chips.push(`Title: ${f.include_titles.join(", ")}`);
+    }
+    if ((f.exclude_titles || []).length) {
+      chips.push(`Not title: ${f.exclude_titles.join(", ")}`);
+    }
+    if (f.min_viewers > 0) {
+      chips.push(`Min ${formatCount(f.min_viewers)} viewers`);
+    }
+    if (f.delay_minutes > 0) {
+      chips.push(`After ${f.delay_minutes} min`);
+    }
+    if (f.quiet_start && f.quiet_end) {
+      chips.push(`Quiet ${f.quiet_start}–${f.quiet_end}`);
+    }
+    if ((f.allowed_days || []).length) {
+      chips.push(`Days: ${f.allowed_days.map((day) => DAY_NAMES[day] || day).join(", ")}`);
+    }
+    if (f.cooldown_minutes > 0) {
+      chips.push(`Cooldown ${f.cooldown_minutes} min`);
+    }
+    if (f.first_stream_of_day) {
+      chips.push("First stream/day");
+    }
+    return chips;
   }
 
 
@@ -1013,11 +1066,18 @@
       const empty = !template.content.trim() && !template.embed_title.trim() && !template.embed_description.trim();
       const previewChannel = channelById(channelId);
       const allText = [template.content, template.embed_title, template.embed_description, template.footer].join("\n");
+      const rendered = data.payload || {};
+      const renderedText = [
+        rendered.content,
+        rendered.embeds?.[0]?.title,
+        rendered.embeds?.[0]?.description,
+        rendered.embeds?.[0]?.footer?.text,
+      ].filter(Boolean).join("\n");
       const usesDiscordMention = allText.includes("{discord_mention}");
       const usesRoleMentions = allText.includes("{role_mentions}");
       const missingDiscordID = usesDiscordMention && template.ping_streamer && channelId && previewChannel && !previewChannel.discord_id;
       const missingRoles = usesRoleMentions && template.ping_roles && !roleIDs.length;
-      const everyoneTyped = /@(everyone|here)\b/i.test(allText);
+      const everyoneTyped = /@(everyone|here)\b/i.test(renderedText);
       const messages = [];
       if (unknown.length) {
         messages.push(`Unknown placeholder${unknown.length === 1 ? "" : "s"}: ${unknown.join(", ")}`);
@@ -1043,13 +1103,13 @@
       const allowed = data.payload?.allowed_mentions || { parse: [], roles: [], users: [] };
       const pings = [];
       const seenPings = new Set();
-      for (const match of allText.matchAll(/<@!?(\d{17,20})>/g)) {
+      for (const match of renderedText.matchAll(/<@!?(\d{17,20})>/g)) {
         if ((allowed.users || []).includes(match[1]) && !seenPings.has(`user:${match[1]}`)) {
           seenPings.add(`user:${match[1]}`);
           pings.push(`@user ${match[1]}`);
         }
       }
-      for (const match of allText.matchAll(/<@&(\d{17,20})>/g)) {
+      for (const match of renderedText.matchAll(/<@&(\d{17,20})>/g)) {
         if ((allowed.roles || []).includes(match[1]) && !seenPings.has(`role:${match[1]}`)) {
           seenPings.add(`role:${match[1]}`);
           pings.push(`@role ${match[1]}`);
@@ -1132,6 +1192,120 @@
     text = text.replace(/&lt;@!?(\d+)&gt;/g, '<span class="discord-mention">@user</span>');
     text = text.replace(/(^|[\s(])@(everyone|here)\b/gi, '$1<span class="discord-mention">@$2</span>');
     return text.replace(/\n/g, "<br>");
+  }
+
+  function openFiltersModal(channelId) {
+    const channel = channelById(channelId);
+    if (!channel) {
+      return;
+    }
+    const f = channel.filters || {};
+    const days = DAY_NAMES.map((label, index) => `
+      <label class="destination-check">
+        <input type="checkbox" name="filter-day" value="${index}" ${(f.allowed_days || []).includes(index) ? "checked" : ""}>
+        <span>${label}</span>
+      </label>`).join("");
+    openModal(`
+      <div class="modal-head">
+        <div><h2>Alert filters</h2><p>Decide when ${escapeHTML(channel.display_name || channel.login)} should post. Live status still updates when an alert is skipped.</p></div>
+        <button class="modal-close" data-action="close-modal" aria-label="Close">${icon("x")}</button>
+      </div>
+      <form id="filters-form" data-channel-id="${channel.id}">
+        <div class="modal-body">
+          <div class="form-grid two">
+            <label class="field">
+              <span class="field-label">Only these games/categories</span>
+              <input id="filter-include-games" class="input" value="${escapeHTML((f.include_games || []).join(", "))}" placeholder="Just Chatting, Music" autocomplete="off">
+              <span class="field-hint">Comma separated. Case-insensitive contains match. Leave blank for all games.</span>
+            </label>
+            <label class="field">
+              <span class="field-label">Never these games/categories</span>
+              <input id="filter-exclude-games" class="input" value="${escapeHTML((f.exclude_games || []).join(", "))}" placeholder="Just Chatting" autocomplete="off">
+              <span class="field-hint">Exclude always wins over include.</span>
+            </label>
+            <label class="field">
+              <span class="field-label">Title must contain</span>
+              <input id="filter-include-titles" class="input" value="${escapeHTML((f.include_titles || []).join(", "))}" placeholder="speedrun, ranked" autocomplete="off">
+              <span class="field-hint">Comma separated keywords.</span>
+            </label>
+            <label class="field">
+              <span class="field-label">Title must not contain</span>
+              <input id="filter-exclude-titles" class="input" value="${escapeHTML((f.exclude_titles || []).join(", "))}" placeholder="spoilers, rerun" autocomplete="off">
+              <span class="field-hint">Exclude always wins over include.</span>
+            </label>
+          </div>
+
+          <div class="settings-section">
+            <div class="field-label" style="margin-bottom:7px">Viewers and timing</div>
+            <div class="form-grid two">
+              <label class="field">
+                <span class="field-label">Minimum viewers</span>
+                <input id="filter-min-viewers" class="input" type="number" min="0" step="1" value="${Number(f.min_viewers) || 0}">
+                <span class="field-hint">0 means no minimum.</span>
+              </label>
+              <label class="field">
+                <span class="field-label">Alert delay (minutes)</span>
+                <input id="filter-delay" class="input" type="number" min="0" max="10080" step="1" value="${Number(f.delay_minutes) || 0}">
+                <span class="field-hint">Wait until the stream has been live this long.</span>
+              </label>
+              <label class="field">
+                <span class="field-label">Cooldown between new streams (minutes)</span>
+                <input id="filter-cooldown" class="input" type="number" min="0" max="10080" step="1" value="${Number(f.cooldown_minutes) || 0}">
+                <span class="field-hint">0 means no cooldown.</span>
+              </label>
+              <div class="field">
+                <span class="field-label">Only the first stream of the day</span>
+                <div class="switch-row" style="padding:6px 0">
+                  <div class="switch-copy"><span>Post once per local calendar day.</span></div>
+                  <label class="switch"><input id="filter-first-stream" type="checkbox" ${f.first_stream_of_day ? "checked" : ""}><span class="switch-track"></span></label>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="settings-section">
+            <div class="field-label" style="margin-bottom:7px">Quiet hours and days</div>
+            <div class="form-grid two">
+              <label class="field">
+                <span class="field-label">Quiet from</span>
+                <input id="filter-quiet-start" class="input" type="time" value="${escapeHTML(f.quiet_start || "")}">
+                <span class="field-hint">Local timezone. Leave both blank to disable.</span>
+              </label>
+              <label class="field">
+                <span class="field-label">Quiet until</span>
+                <input id="filter-quiet-end" class="input" type="time" value="${escapeHTML(f.quiet_end || "")}">
+                <span class="field-hint">Windows can cross midnight.</span>
+              </label>
+            </div>
+            <div class="field-label" style="margin:8px 0 7px">Allowed days</div>
+            <div class="destination-checks">${days}</div>
+            <p class="field-hint" style="margin:9px 0 0">Leave every day unchecked to allow all days.</p>
+          </div>
+
+          <div class="warning-box" style="margin-top:12px">${icon("bell")}<span>Filters only affect posting. The streamer still shows as live, and dedupe still applies per destination.</span></div>
+        </div>
+        <div class="modal-foot">
+          <button type="button" class="btn btn-ghost" data-action="universal-close">Cancel</button>
+          <button type="submit" class="btn btn-primary">${icon("check")} Save filters</button>
+        </div>
+      </form>
+    `);
+  }
+
+  function readFilters() {
+    return {
+      include_games: listFrom($("#filter-include-games")?.value),
+      exclude_games: listFrom($("#filter-exclude-games")?.value),
+      include_titles: listFrom($("#filter-include-titles")?.value),
+      exclude_titles: listFrom($("#filter-exclude-titles")?.value),
+      min_viewers: Math.max(0, Math.round(Number($("#filter-min-viewers")?.value) || 0)),
+      delay_minutes: Math.max(0, Math.round(Number($("#filter-delay")?.value) || 0)),
+      cooldown_minutes: Math.max(0, Math.round(Number($("#filter-cooldown")?.value) || 0)),
+      first_stream_of_day: Boolean($("#filter-first-stream")?.checked),
+      quiet_start: $("#filter-quiet-start")?.value || "",
+      quiet_end: $("#filter-quiet-end")?.value || "",
+      allowed_days: $$('input[name="filter-day"]:checked').map((input) => Number(input.value)),
+    };
   }
 
   function openDiscordIDModal(channelId) {
@@ -1379,6 +1553,9 @@ function openSampleModal(channelId) {
       case "edit-discord-id":
         openDiscordIDModal(actionElement.dataset.channel);
         break;
+      case "edit-filters":
+        openFiltersModal(actionElement.dataset.channel);
+        break;
       case "sample-channel":
         openSampleModal(actionElement.dataset.channel);
         break;
@@ -1511,6 +1688,29 @@ function openSampleModal(channelId) {
       } finally {
         button.disabled = false;
         button.innerHTML = `${icon("check")} Save settings`;
+      }
+      return;
+    }
+
+    if (event.target.id === "filters-form") {
+      event.preventDefault();
+      const form = event.target;
+      const channelId = form.dataset.channelId;
+      const button = $("button[type=submit]", form);
+      button.disabled = true;
+      button.innerHTML = '<span class="spinner"></span> Saving…';
+      try {
+        state = await api(`/api/channels/${channelId}`, {
+          method: "PUT",
+          body: { filters: readFilters() },
+        });
+        closeModal();
+        render();
+        toast("Alert filters saved.", "success");
+      } catch (error) {
+        toast(error.message, "error");
+        button.disabled = false;
+        button.innerHTML = `${icon("check")} Save filters`;
       }
       return;
     }

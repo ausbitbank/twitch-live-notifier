@@ -11,18 +11,20 @@ import (
 )
 
 type ChannelStatus struct {
-	Live          bool   `json:"live"`
-	Title         string `json:"title,omitempty"`
-	Game          string `json:"game,omitempty"`
-	Viewers       int    `json:"viewers"`
-	Thumbnail     string `json:"thumbnail,omitempty"`
-	StartedAt     string `json:"started_at,omitempty"`
-	LastTitle     string `json:"last_title,omitempty"`
-	LastGame      string `json:"last_game,omitempty"`
-	LastStartedAt string `json:"last_started_at,omitempty"`
-	LastThumbnail string `json:"last_thumbnail,omitempty"`
-	LastChecked   string `json:"last_checked,omitempty"`
-	Error         string `json:"error,omitempty"`
+	Live             bool   `json:"live"`
+	Title            string `json:"title,omitempty"`
+	Game             string `json:"game,omitempty"`
+	Viewers          int    `json:"viewers"`
+	Thumbnail        string `json:"thumbnail,omitempty"`
+	StartedAt        string `json:"started_at,omitempty"`
+	LastTitle        string `json:"last_title,omitempty"`
+	LastGame         string `json:"last_game,omitempty"`
+	LastStartedAt    string `json:"last_started_at,omitempty"`
+	LastThumbnail    string `json:"last_thumbnail,omitempty"`
+	LastChecked      string `json:"last_checked,omitempty"`
+	Error            string `json:"error,omitempty"`
+	FilterReason     string `json:"filter_reason,omitempty"`
+	FilteredStreamID string `json:"filtered_stream_id,omitempty"`
 }
 
 type Activity struct {
@@ -290,6 +292,12 @@ func (a *App) checkChannel(ctx context.Context, channel Channel, webhooks []Webh
 
 	info := streamInfoFromTwitch(user, true)
 	info.DiscordID = channel.DiscordID
+
+	if allowed, reason := evaluateFilters(channel, info, now, time.Local); !allowed {
+		a.recordFilterSkip(channel.ID, info.StreamID, reason)
+		return 0, nil
+	}
+
 	posted := 0
 	var postErrors []string
 	for _, destination := range channel.Destinations {
@@ -337,6 +345,9 @@ func (a *App) markPosted(channelID, webhookID, streamID, messageID string, now t
 				break
 			}
 		}
+		a.cfg.Channels[index].LastAlertAt = now.UTC().Format(time.RFC3339)
+		a.cfg.Channels[index].LastAlertDate = now.Local().Format("2006-01-02")
+		a.cfg.Channels[index].LastAlertStreamID = streamID
 	}
 	a.persistLocked()
 }
@@ -385,6 +396,52 @@ func (a *App) recordWebhookFailure(id string, err error) {
 		webhook.Invalid = true
 	}
 	_ = a.persistLocked()
+}
+
+func (a *App) recordFilterSkip(channelID, streamID, reason string) {
+	a.mu.Lock()
+	status, ok := a.statuses[channelID]
+	changed := !ok || status.FilteredStreamID != streamID
+	if ok {
+		status.FilterReason = reason
+		status.FilteredStreamID = streamID
+		a.statuses[channelID] = status
+	}
+	name := channelID
+	if index := a.channelIndexLocked(channelID); index >= 0 {
+		name = a.cfg.Channels[index].DisplayName
+	}
+	a.mu.Unlock()
+
+	if changed {
+		a.addActivity("info", fmt.Sprintf("Skipped alert for %s: %s.", name, reason))
+	}
+}
+
+func (a *App) SetChannelFilters(id string, filters Filters) error {
+	validated, err := validateFilters(filters)
+	if err != nil {
+		return err
+	}
+
+	a.mu.Lock()
+	index := a.channelIndexLocked(id)
+	if index < 0 {
+		a.mu.Unlock()
+		return errors.New("streamer not found")
+	}
+	a.cfg.Channels[index].Filters = validated
+	name := a.cfg.Channels[index].DisplayName
+	err = a.persistLocked()
+	a.mu.Unlock()
+	if err != nil {
+		return err
+	}
+	a.addActivity("info", "Updated filters for "+name+".")
+	if a.enableAutoCheck {
+		a.TriggerCheck()
+	}
+	return nil
 }
 
 func (a *App) statusFor(channelID string) ChannelStatus {

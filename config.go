@@ -29,6 +29,27 @@ type Channel struct {
 	DiscordID    string        `json:"discord_id,omitempty"`
 	Enabled      bool          `json:"enabled"`
 	Destinations []Destination `json:"destinations"`
+	Filters      Filters       `json:"filters"`
+
+	LastAlertAt       string `json:"last_alert_at,omitempty"`
+	LastAlertDate     string `json:"last_alert_date,omitempty"`
+	LastAlertStreamID string `json:"last_alert_stream_id,omitempty"`
+}
+
+// Filters controls whether a live stream becomes a Discord alert. Rules are
+// evaluated in the user's local timezone. Excludes always win over includes.
+type Filters struct {
+	IncludeGames     []string `json:"include_games,omitempty"`
+	ExcludeGames     []string `json:"exclude_games,omitempty"`
+	IncludeTitles    []string `json:"include_titles,omitempty"`
+	ExcludeTitles    []string `json:"exclude_titles,omitempty"`
+	MinViewers       int      `json:"min_viewers,omitempty"`
+	QuietStart       string   `json:"quiet_start,omitempty"`
+	QuietEnd         string   `json:"quiet_end,omitempty"`
+	AllowedDays      []int    `json:"allowed_days,omitempty"`
+	CooldownMinutes  int      `json:"cooldown_minutes,omitempty"`
+	FirstStreamOfDay bool     `json:"first_stream_of_day,omitempty"`
+	DelayMinutes     int      `json:"delay_minutes,omitempty"`
 }
 
 type Destination struct {
@@ -273,6 +294,7 @@ func normalizeConfig(cfg *Config) {
 				channel.DiscordID = ""
 			}
 		}
+		channel.Filters = normalizeFilters(channel.Filters)
 		seen := make(map[string]bool, len(channel.Destinations))
 		destinations := make([]Destination, 0, len(channel.Destinations))
 		for _, destination := range channel.Destinations {
@@ -320,6 +342,11 @@ func cloneConfig(cfg Config) Config {
 	for i, channel := range cfg.Channels {
 		clone.Channels[i] = channel
 		clone.Channels[i].Destinations = append([]Destination(nil), channel.Destinations...)
+		clone.Channels[i].Filters.IncludeGames = append([]string(nil), channel.Filters.IncludeGames...)
+		clone.Channels[i].Filters.ExcludeGames = append([]string(nil), channel.Filters.ExcludeGames...)
+		clone.Channels[i].Filters.IncludeTitles = append([]string(nil), channel.Filters.IncludeTitles...)
+		clone.Channels[i].Filters.ExcludeTitles = append([]string(nil), channel.Filters.ExcludeTitles...)
+		clone.Channels[i].Filters.AllowedDays = append([]int(nil), channel.Filters.AllowedDays...)
 	}
 	clone.Webhooks = make([]Webhook, len(cfg.Webhooks))
 	for i, webhook := range cfg.Webhooks {

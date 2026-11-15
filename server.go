@@ -198,13 +198,14 @@ func newDashboardHandler(app *App, onQuit func()) http.Handler {
 			return
 		}
 		var request struct {
-			Enabled   *bool   `json:"enabled"`
-			DiscordID *string `json:"discord_id"`
+			Enabled   *bool    `json:"enabled"`
+			DiscordID *string  `json:"discord_id"`
+			Filters   *Filters `json:"filters"`
 		}
 		if !decodeJSON(w, r, &request) {
 			return
 		}
-		if request.Enabled == nil && request.DiscordID == nil {
+		if request.Enabled == nil && request.DiscordID == nil && request.Filters == nil {
 			writeAPIError(w, http.StatusBadRequest, errors.New("no changes supplied"))
 			return
 		}
@@ -216,6 +217,12 @@ func newDashboardHandler(app *App, onQuit func()) http.Handler {
 		}
 		if request.DiscordID != nil {
 			if err := app.SetChannelDiscordID(r.PathValue("id"), *request.DiscordID); err != nil {
+				writeAPIError(w, http.StatusBadRequest, err)
+				return
+			}
+		}
+		if request.Filters != nil {
+			if err := app.SetChannelFilters(r.PathValue("id"), *request.Filters); err != nil {
 				writeAPIError(w, http.StatusBadRequest, err)
 				return
 			}

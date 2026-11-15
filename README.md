@@ -41,6 +41,8 @@ posts where, and tune each message with placeholders and a live Discord preview.
   explicitly opts in.
 - **No accidental pings.** Only IDs you explicitly configure can be mentioned,
   so a stream title cannot accidentally ping the whole server.
+- **Post on your terms.** Filter by game, title, viewers, quiet hours, allowed
+  days, cooldowns, and alert delay, per streamer.
 
 ## Runs on
 
@@ -217,6 +219,30 @@ Any other role mention is inert, even if someone types it into the template.
 - `GET /healthz` reports whether the monitor is alive, with the last check time,
   uptime, pause state, and counts. It returns HTTP 503 when checks are stale.
   Docker uses this endpoint for its built-in healthcheck.
+
+## Notification filters and quiet hours
+
+Every streamer has its own **Alert filters**, edited from the streamer card.
+Filters decide whether a live stream posts; they never hide the live status.
+
+- **Games/categories:** only these, or never these. Matching is
+  case-insensitive and contains the text. Excludes always win over includes.
+- **Title keywords:** title must contain, or must not contain.
+- **Minimum viewers:** skip low-viewer streams.
+- **Alert delay:** wait until the stream has been live for N minutes.
+- **Quiet hours:** a local-time window, including windows that cross midnight.
+- **Allowed days:** post only on selected weekdays. Empty means every day.
+- **Cooldown:** minimum minutes between new-stream alerts.
+- **First stream of the day:** post at most once per local calendar day.
+
+Quiet hours, allowed days, cooldowns, and first-of-day use the app's local
+timezone. In Docker, set `TZ` (for example `TZ=Europe/London`); the default is
+UTC.
+
+A filtered stream still updates the dashboard and still respects dedupe. The
+streamer card shows **Not posting** with the reason, so a quiet-hours or
+viewer-threshold skip is easy to spot. Removing or relaxing a filter while the
+stream is still live allows the alert to post on the next check.
 
 ## Settings and privacy
 
