@@ -329,6 +329,14 @@ This requires `go-winres` and ImageMagick.
 - Prebuilt artifacts are 64-bit Windows/Linux and Intel/Apple Silicon macOS.
   Other Go targets can be built from source.
 
+## Roadmap and research
+
+- [Public roadmap](docs/roadmap.md)
+- [Competitive research and sources](docs/competitive-research.md)
+- [Clean-session project brief](docs/project-context.md)
+
+Issues and feature suggestions are welcome.
+
 ## Disclaimer
 
 Twitch and Discord are trademarks of their respective owners. This project is
