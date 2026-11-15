@@ -248,6 +248,79 @@ func TestPreviewAndUnknownPlaceholders(t *testing.T) {
 	}
 }
 
+func TestSetRouteTemplate(t *testing.T) {
+	app := newTestApp(t)
+	webhook := injectWebhook(t, app, "Community", "https://discord.com/api/webhooks/1234567890/abcdefghijklmnopqrstuvwxyz")
+	app.mu.Lock()
+	app.cfg.Channels = []Channel{{
+		ID: "channel1", Login: "teststreamer", DisplayName: "TestStreamer", Enabled: true,
+		Destinations: []Destination{{WebhookID: webhook.ID}},
+	}}
+	app.mu.Unlock()
+
+	template := defaultTemplate()
+	template.Content = "Route {streamer}"
+	if err := app.SetRouteTemplate("channel1", webhook.ID, &template); err != nil {
+		t.Fatalf("SetRouteTemplate returned error: %v", err)
+	}
+	cfg := app.ConfigSnapshot()
+	if cfg.Channels[0].Destinations[0].Template == nil || cfg.Channels[0].Destinations[0].Template.Content != "Route {streamer}" {
+		t.Fatalf("route template = %+v", cfg.Channels[0].Destinations[0].Template)
+	}
+	if err := app.SetRouteTemplate("channel1", webhook.ID, nil); err != nil {
+		t.Fatalf("clearing route template returned error: %v", err)
+	}
+	if app.ConfigSnapshot().Channels[0].Destinations[0].Template != nil {
+		t.Fatal("route template was not cleared")
+	}
+	if err := app.SetRouteTemplate("missing", webhook.ID, &template); err == nil {
+		t.Fatal("unknown streamer accepted")
+	}
+}
+
+func TestAddWebhookInputStoresLifecycleIdentityAndTemplatePower(t *testing.T) {
+	app := newTestApp(t)
+	ended := defaultEndedTemplate()
+	input := WebhookInput{
+		Label:         "Community",
+		URL:           "https://discord.com/api/webhooks/1234567890/abcdefghijklmnopqrstuvwxyz",
+		Enabled:       true,
+		Template:      defaultTemplate(),
+		Username:      "Community Alerts",
+		AvatarURL:     "https://example.com/avatar.png",
+		ThreadID:      "987654321012345678",
+		Buttons:       []TemplateButton{{Label: "Watch", URL: "{url}"}},
+		UpdateSeconds: 60,
+		Cleanup:       CleanupSettings{Mode: cleanupEdit, Template: &ended},
+	}
+	webhook, err := app.AddWebhookInput(input)
+	if err != nil {
+		t.Fatalf("AddWebhookInput returned error: %v", err)
+	}
+	cfg := app.ConfigSnapshot()
+	if len(cfg.Webhooks) != 1 {
+		t.Fatalf("webhooks = %+v", cfg.Webhooks)
+	}
+	stored := cfg.Webhooks[0]
+	if stored.ID != webhook.ID || stored.Username != input.Username || stored.AvatarURL != input.AvatarURL {
+		t.Fatalf("identity = %+v", stored)
+	}
+	if stored.ThreadID != input.ThreadID || stored.UpdateSeconds != 60 || stored.Cleanup.Mode != cleanupEdit {
+		t.Fatalf("lifecycle = %+v", stored)
+	}
+	if len(stored.Buttons) != 1 || stored.Buttons[0].URL != "{url}" {
+		t.Fatalf("buttons = %+v", stored.Buttons)
+	}
+	if _, err := app.AddWebhookInput(WebhookInput{
+		Label:    "Bad thread",
+		URL:      "https://discord.com/api/webhooks/1234567891/abcdefghijklmnopqrstuvwxyz",
+		Template: defaultTemplate(),
+		ThreadID: "not-a-thread",
+	}); err == nil {
+		t.Fatal("invalid thread ID accepted")
+	}
+}
+
 func TestAddWebhookValidation(t *testing.T) {
 	app := newTestApp(t)
 	_, err := app.AddWebhook("Community", "https://discord.com/api/webhooks/1234567890/abcdefghijklmnopqrstuvwxyz", nil, nil)

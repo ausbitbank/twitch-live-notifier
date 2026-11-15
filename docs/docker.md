@@ -17,9 +17,10 @@ docker compose up -d
 Open <http://127.0.0.1:8787/>. Add your Discord destinations and Twitch
 streamers exactly as you would in the desktop app.
 
-Configuration lives in the `twitch-live-data` volume at
-`/data/config.json`. It survives `docker compose down`, image upgrades, and
-container recreation.
+Configuration lives in the `twitch-live-data` volume at `/data/config.json`.
+Encrypted webhook URLs live in `/data/secrets.json`, with `/data/secret.key` used
+when the container has no OS keyring. The volume survives `docker compose down`,
+image upgrades, and container recreation.
 
 Check status and logs:
 
@@ -35,9 +36,10 @@ seconds. `healthy` means the monitor is running and its last check is recent;
 
 ## Accessing the dashboard safely
 
-**The dashboard has no login.** It can add streamers, read masked webhook URLs,
-and change routing. Keep it on loopback or put it behind an authenticating
-reverse proxy.
+**The dashboard has no login by default.** It can add streamers, inspect the
+encrypted secret store while editing, and change routing. Set an optional
+**Dashboard token** under Settings to require a token for API access, but still
+keep the port on loopback or put it behind an authenticating reverse proxy.
 
 The default compose mapping is:
 
@@ -66,7 +68,10 @@ analytics, telemetry, or cloud relay.
 
 ## Configuration volume
 
-The named volume is created automatically. To back it up:
+The named volume is created automatically. You can also use **Download backup**
+in Settings for a portable, redacted-by-default export, or **With secrets** when
+you need to move the configuration to another machine. For a full filesystem
+backup, archive the named volume:
 
 ```bash
 docker run --rm \
@@ -117,7 +122,7 @@ Settings are not touched by an update. The previous image remains available for
 rollback by pinning a tag:
 
 ```yaml
-image: ghcr.io/ausbitbank/twitch-live-notifier:v2.2.0
+image: ghcr.io/ausbitbank/twitch-live-notifier:v2.3.0
 ```
 
 ## Timezone and quiet hours
@@ -152,7 +157,7 @@ The default is `UTC`. The image includes `tzdata`.
 ```json
 {
   "status": "healthy",
-  "version": "2.2.0",
+  "version": "2.3.0",
   "uptime_seconds": 3600,
   "monitoring": true,
   "paused": false,
@@ -185,13 +190,14 @@ docker compose exec app /app/TwitchLiveNotifier --healthcheck
 
 ## Privacy and logs
 
-- Webhook URLs are stored only in `/data/config.json` inside the volume.
+- Webhook URLs are encrypted in `/data/secrets.json` inside the volume. The
+  fallback key is `/data/secret.key` when no keyring is available.
 - The app does not print webhook URLs to logs. Startup logs include the version,
   dashboard URL, and config path only.
 - Container logs contain check results and destination labels, not webhook
   tokens.
-- Do not share `docker compose config`, unmasked dashboard screenshots, or the
-  config volume in bug reports.
+- Do not share `docker compose config`, unmasked dashboard screenshots, backups
+  with secrets, or the config volume in bug reports.
 
 ## Troubleshooting
 

@@ -10,6 +10,10 @@ dist
 # Local settings and secrets
 config.json
 *.local.json
+secrets.json
+secret.key
+server.port
+instance.lock
 
 # Documentation artwork is not needed in the image
 assets

@@ -1089,6 +1089,13 @@ svg {
   background: rgba(255, 255, 255, 0.02);
 }
 
+.destination-check-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
 .destination-check {
   display: flex;
   align-items: center;
@@ -1651,6 +1658,24 @@ svg {
   background: linear-gradient(135deg, #211735, #14101f);
   color: #7e749d;
   font-size: 11px;
+}
+
+.discord-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.discord-button {
+  border: 1px solid #5865f2;
+  border-radius: 4px;
+  background: #4e5ac9;
+  color: #fff;
+  padding: 5px 10px;
+  font-size: 11px;
+  font-weight: 600;
+  text-decoration: none;
 }
 
 .placeholder-row {

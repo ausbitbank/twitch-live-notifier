@@ -1,5 +1,60 @@
 # Changelog
 
+## 2.3.0 - 2026-11-16
+
+### Stream lifecycle
+
+- Each streamer→destination route now stores the Discord message ID, original
+  webhook URL, and thread ID, so later edits and cleanup target the same post.
+- Added per-destination stream-end behavior: leave the message, delete it, edit
+  it into an ended message, or post a separate ended message.
+- Ended messages support last title/game, the `{vod}` placeholder, and their own
+  template, with pings off by default.
+- Live messages can be edited while a stream is live at a configurable interval
+  (minimum 60 seconds). Turning updates off leaves the original post untouched.
+- Cleanup and edit failures are logged and retried safely; they never block the
+  next stream.
+- Existing `last_stream_id` / `last_posted_at` dedupe still survives restarts.
+
+### Destination identity and targets
+
+- Added per-destination webhook name and avatar overrides.
+- Added an optional thread ID for posting into an existing Discord thread or
+  forum post.
+- Added up to five link buttons per destination, with placeholders in labels and
+  URLs.
+
+### Template power
+
+- Added an optional template override for each streamer→destination route.
+- Added conditional fallbacks such as `{game|Just Chatting}`.
+- Added custom embed fields and a configurable field order.
+- Added template import/export and destination duplication.
+
+### Secret storage and config UX
+
+- Webhook URLs are encrypted at rest using DPAPI on Windows, Keychain on macOS,
+  and libsecret on Linux when available. A private 0600 key file is used as the
+  fallback when no keyring is available.
+- Added redacted-by-default config export, an explicit with-secrets export, and
+  restore from backup in Settings.
+- Added an optional dashboard token for API access when the dashboard is exposed
+  beyond loopback. `/healthz` remains available for Docker.
+- Added a friendly warning when a redacted backup is restored and the webhook URL
+  needs to be re-entered.
+
+### Upgrade notes
+
+- The config schema is now version 4. Version 3 configs load automatically;
+  new lifecycle, identity, and template fields default to off/empty.
+- Webhook URLs move into `secrets.json` (plus `secret.key` when using the
+  fallback) next to `config.json`. Back up the whole settings folder, or use the
+  with-secrets export if you need to move a configuration to another machine.
+- A redacted export intentionally contains no webhook URLs. Re-enter them on the
+  Destinations page after restoring it.
+- Backups never include the dashboard token. Set it again after restoring if you
+  still need API protection.
+
 ## 2.2.0 - 2026-11-16
 
 ### Self-hosting and health

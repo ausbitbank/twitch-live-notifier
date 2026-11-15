@@ -7,8 +7,8 @@ context.
 
 - **Local path:** `/mnt/arty/twitch-live-notifier`
 - **GitHub:** <https://github.com/ausbitbank/twitch-live-notifier>
-- **Current version:** 2.2.0
-- **Current release:** <https://github.com/ausbitbank/twitch-live-notifier/releases/tag/v2.2.0>
+- **Current version:** 2.3.0
+- **Current release:** <https://github.com/ausbitbank/twitch-live-notifier/releases/tag/v2.3.0>
 - **Branch:** `main`
 - **License:** MIT
 
@@ -22,10 +22,17 @@ Core promises:
 - No Discord bot, Twitch OAuth, or Twitch API registration required.
 - Multiple streamers and multiple labelled Discord destinations.
 - Per-destination message templates with placeholders and a live Discord preview.
+- Per-route template overrides, conditional fallbacks, custom fields, and field
+  ordering.
 - Once-per-stream, per-destination dedupe that survives restarts.
+- Stored live message IDs so live messages can be edited and cleaned up on
+  stream end.
 - Optional per-streamer Discord ping using `{discord_mention}`.
 - Optional per-destination role pings using `{role_mentions}`.
+- Per-destination webhook name/avatar overrides, thread targets, and link buttons.
 - Game/title/viewer filters, quiet hours, allowed days, cooldowns, and delays.
+- Encrypted webhook URLs at rest, redacted backups, and an optional dashboard
+  token.
 - Local-first privacy: dashboard and settings run on `127.0.0.1`.
 - Windows tray app; Linux/macOS dashboard mode (`--serve`).
 - Docker/self-host mode with `/healthz` and multi-arch images.
@@ -44,13 +51,18 @@ Core promises:
 | File | Responsibility |
 | --- | --- |
 | `main.go` | CLI parsing, mode dispatch, usage, `--check`, `--serve`, `--background`, `--healthcheck` |
-| `app.go` | App state, monitor loop, Twitch checks, routing, dedupe, filters, mutations, activity |
-| `config.go` | Config types, defaults, migration, validation, persistence, Discord ID/role normalization |
+| `app.go` | App state, monitor loop, Twitch checks, routing, dedupe, stream lifecycle, filters, mutations, activity |
+| `config.go` | Config types, defaults, migration, validation, persistence, Discord ID/role/button normalization |
+| `secret.go` | Secret store, AES-GCM protection, fallback key file |
+| `secret_unix.go` | macOS Keychain / Linux libsecret key lookup and storage |
+| `secret_windows.go` | Windows DPAPI protect/unprotect |
+| `secret_config.go` | Resolve/encrypt config secrets, redacted export/import |
+| `auth.go` | Optional dashboard token hashing and API middleware |
 | `filters.go` | Per-streamer filter normalization, validation, and evaluation |
 | `health.go` | `/healthz` payload, monitor liveness rules, healthcheck CLI probe |
 | `retry.go` | Exponential backoff with jitter and context-aware retry sleeps |
 | `server.go` | Local HTTP server, JSON API, embedded dashboard, security headers, listen/health/quit |
-| `templates.go` | Placeholders, rendering, mention scoping, Discord payload builder, test payload |
+| `templates.go` | Placeholders, fallback syntax, custom fields, route templates, mention scoping, payload builder |
 | `twitch.go` | Twitch public web GraphQL client with bounded retries |
 | `discord.go` | Discord webhook POST, 429 handling, payload types, error classification |
 | `instance_lock.go` | Shared lock path resolution |
@@ -79,20 +91,39 @@ Core promises:
   jittered exponential backoff. `404`/API errors do not retry.
 - A destination stores `last_stream_id` and `last_posted_at`; matching stream IDs
   are skipped.
+- A posted live alert also stores a `LiveMessage` record with the Discord message
+  ID, original webhook URL, thread ID, stream ID, title/game, VOD URL, and last
+  edit time.
+- While a stream is live, `update_seconds` can edit the same message at a minimum
+  60-second interval. Off leaves it untouched.
+- On stream end, the per-destination cleanup mode can leave, delete, edit into an
+  ended message, or post a separate ended message. Ended messages default to no
+  pings.
+- Cleanup/edit failures are logged and retried, but never block a future stream.
 - Manual **Check all** also respects dedupe.
 - A new Twitch stream ID posts again.
 - A failed Discord post does not record the stream ID, so it retries on the next
   check.
-- Discord `429` honors `Retry-After`/`retry_after` and retries once.
+- Discord `429` honors `Retry-After`/`retry_after` and retries once for posts,
+  edits, and deletes.
 - Discord `401`/`403`/`404` marks the destination invalid and skips it until the
   URL changes or a test succeeds. Other destinations keep working.
-- Config is saved after profile changes and successful posts.
+- Config is saved after profile changes, successful posts, live edits, cleanup,
+  and settings changes.
 - Windows runs in the tray; Linux/macOS run the dashboard in the foreground.
 - Optional streamer Discord ID renders `{discord_mention}` as `<@id>`.
 - Optional destination role IDs render `{role_mentions}` as `<@&id>`.
 - `allowed_mentions` always includes an explicit `parse` list; `users` and
   `roles` contain only configured IDs. `@everyone`/`@here` require an explicit
   per-destination opt-in.
+- Per-destination webhook username/avatar, thread ID, and up to five link
+  buttons are applied to posts and previews.
+- A route-level template override changes only that streamer→destination message;
+  mention controls stay destination-wide.
+- Webhook URLs are encrypted into `secrets.json` with DPAPI/Keychain/libsecret,
+  or a 0600 `secret.key` fallback. Redacted backups omit URLs; with-secrets
+  backups include them.
+- An optional dashboard token protects `/api/*`; `/healthz` remains public.
 - Per-streamer filters evaluate game/title rules, minimum viewers, delay,
   quiet hours, allowed days, cooldown, and first-stream-of-day. Excludes win.
 - Filtered streams still update live status and do not record dedupe.
@@ -108,11 +139,16 @@ Core promises:
 - `POST /api/channels`, `PUT/DELETE /api/channels/{id}` (enabled, Discord ID,
   filters).
 - `POST /api/channels/{id}/check`, `/sample`.
-- `PUT /api/channels/{id}/destinations`.
+- `PUT /api/channels/{id}/destinations` (routing).
+- `PUT /api/channels/{id}/destinations/{webhookID}` (route template override).
 - `POST /api/webhooks`, `PUT/DELETE /api/webhooks/{id}` (label, URL, roles,
-  template, enabled).
+  template, identity, thread, buttons, update interval, cleanup, enabled).
 - `POST /api/webhooks/{id}/test`.
-- `POST /api/preview` (template, channel, label, role IDs).
+- `POST /api/preview` (template, channel, label, role IDs, identity, buttons,
+  ended preview).
+- `GET /api/config/export` (redacted by default, `?secrets=1` for full).
+- `POST /api/config/import` (restore backup).
+- `PUT /api/dashboard-token` (set or clear the optional API token).
 - `POST /api/check`, `PUT /api/settings`, `/api/open-data-folder`, `/api/quit`.
 - Browser dashboard at `http://127.0.0.1:8787/` (falls back to the next port).
   `--listen` binds an explicit address; Docker uses `0.0.0.0:8787` internally.
@@ -123,6 +159,10 @@ Core promises:
 - **Linux:** `~/.config/TwitchLiveNotifier/config.json`
 - **macOS:** `~/Library/Application Support/TwitchLiveNotifier/config.json`
 - **Docker:** `/data/config.json` in the `twitch-live-data` volume
+
+The same folder also contains `secrets.json` (encrypted webhook URLs) and, when
+no OS keyring is available, `secret.key` (the fallback 0600 AES key). Back up the
+whole folder or use the with-secrets export.
 
 ## Commands
 
@@ -170,28 +210,32 @@ TwitchLiveNotifier.exe --healthcheck
   - creates Windows ZIP, Linux tar.gz, macOS tar.gz,
   - uploads raw binaries plus archives and `SHA256SUMS.txt`,
   - builds and pushes `linux/amd64` + `linux/arm64` images to GHCR.
-- Current tag: `v2.2.0`.
+- Current tag: `v2.3.0`.
 
 ## Known constraints
 
 - Polling is every 2 minutes by default; very short streams can be missed.
 - Twitch checks use the public web GraphQL endpoint, not the official API.
-- No stream-end cleanup, live message updates, live roles, schedule sync, or
-  Twitch Teams yet.
+- No live-role automation, schedule sync, or Twitch Teams yet.
 - Windows has the native tray. Linux/macOS have no native tray.
-- All platforms now prevent multiple instances per settings file.
-- Webhook URLs are stored in plain text in the per-user config.
+- All platforms prevent multiple instances per settings file.
+- Webhook URLs are encrypted at rest where a keyring is available. Without a
+  keyring, the fallback key file is only as private as the settings folder.
 - Windows binary is unsigned.
-- The dashboard has no authentication. Keep `--listen`/Docker port on loopback or
-  use an authenticating reverse proxy.
+- The dashboard has no authentication by default. It can be protected with an
+  optional dashboard token, but it should still stay on loopback or behind an
+  authenticating reverse proxy when exposed.
 - No official Twitch API/EventSub mode.
-- Stream lifecycle features are next (v2.3).
+- Stream lifecycle, identity/threads, route templates, and secret storage are
+  shipped in v2.3.
 
 ## Do not regress
 
 - Core operation must not require a Discord bot or Twitch login.
 - Multi-destination routing and per-destination templates must remain.
 - Dedupe must remain per stream/per destination and survive restarts.
+- Stored message IDs must keep edits/cleanup targeting the original post, and a
+  cleanup failure must never block the next stream.
 - `@everyone` and role mentions must remain blocked unless explicitly enabled.
 - The dashboard must remain local-only by default.
 - Windows/Linux/macOS builds must keep passing CI.
@@ -210,7 +254,7 @@ TwitchLiveNotifier.exe --healthcheck
 We are continuing work on Twitch Live to Discord at
 /mnt/arty/twitch-live-notifier. Read README.md, docs/project-context.md,
 docs/competitive-research.md, and docs/roadmap.md first. The current release is
-v2.2.0 on main.
+v2.3.0 on main.
 
 Start with the v2.3 P1 roadmap item: stream-end cleanup and message updates.
 Then continue through live message updates, per-route templates, thread targets,
@@ -225,5 +269,6 @@ blocked @everyone/roles unless explicitly configured.
 Implement one slice at a time. Add/update tests, run go test ./..., go vet for
 Linux and Windows, and race tests. Run UI/Playwright smoke tests where relevant.
 Update README, CHANGELOG, and docs. Commit and push to main. If all checks pass,
-tag and release v2.2.0 and verify the GitHub release assets and checksums.
+tag and release v2.3.0 and verify the GitHub release assets, checksums, and
+multi-arch GHCR images.
 ```

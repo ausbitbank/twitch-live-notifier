@@ -48,6 +48,13 @@ const twitchGQLQuery = `query ChannelData($login: String!) {
         boxArtURL(width: 600, height: 800)
       }
     }
+    videos(first: 1, type: ARCHIVE) {
+      edges {
+        node {
+          id
+        }
+      }
+    }
   }
 }`
 
@@ -80,6 +87,10 @@ type twitchBroadcast struct {
 	Game      twitchGame `json:"game"`
 }
 
+type twitchVideo struct {
+	ID string `json:"id"`
+}
+
 type twitchUser struct {
 	Login           string           `json:"login"`
 	DisplayName     string           `json:"displayName"`
@@ -87,6 +98,11 @@ type twitchUser struct {
 	BannerImageURL  string           `json:"bannerImageURL"`
 	Stream          *twitchStream    `json:"stream"`
 	LastBroadcast   *twitchBroadcast `json:"lastBroadcast"`
+	Videos          struct {
+		Edges []struct {
+			Node twitchVideo `json:"node"`
+		} `json:"edges"`
+	} `json:"videos"`
 }
 
 type twitchGQLResponse struct {

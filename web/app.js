@@ -23,6 +23,9 @@
     eye: '<path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/>',
     link: '<path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>',
     sparkles: '<path d="m12 3 1.4 4.2L18 9l-4.6 1.8L12 15l-1.4-4.2L6 9l4.6-1.8Z"/><path d="m19 15 .8 2.2L22 18l-2.2.8L19 21l-.8-2.2L16 18l2.2-.8Z"/><path d="m5 15 .7 1.8L7.5 18l-1.8.7L5 20.5l-.7-1.8L2.5 18l1.8-.7Z"/>',
+    copy: '<rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>',
+    download: '<path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/>',
+    upload: '<path d="M12 21V9"/><path d="m7 14 5-5 5 5"/><path d="M5 3h14"/>',
   };
 
   const MAX = {
@@ -41,7 +44,12 @@
   let lastFocusedField = null;
   let previewTimer = null;
   let previewSequence = 0;
+  let routePreviewTimer = null;
+  let routePreviewSequence = 0;
+  let routeLastFocusedField = null;
   let escHandler = null;
+  let tokenPromptActive = false;
+  let tokenPromptDismissed = false;
 
   function icon(name) {
     return `<svg viewBox="0 0 24 24" aria-hidden="true">${iconPaths[name] || ""}</svg>`;
@@ -94,6 +102,16 @@
     }
     const hours = value / 3600;
     return `${Number.isInteger(hours) ? hours : hours.toFixed(1)} hr`;
+  }
+
+  function updateIntervalOptions(current) {
+    const values = [0, 60, 120, 300, 600, 900, 1800];
+    const selected = Number(current) || 0;
+    if (selected && !values.includes(selected)) {
+      values.push(selected);
+    }
+    values.sort((a, b) => a - b);
+    return values.map((seconds) => `<option value="${seconds}" ${seconds === selected ? "selected" : ""}>${seconds === 0 ? "Off" : `Every ${formatInterval(seconds)}`}</option>`).join("");
   }
 
   function formatRelative(value) {
@@ -160,13 +178,44 @@
     return (state?.config?.channels || []).filter((channel) => assignedWebhookIDs(channel).includes(webhookId)).length;
   }
 
-  async function api(path, { method = "GET", body } = {}) {
+  function storedDashboardToken() {
+    try {
+      return sessionStorage.getItem("twitch-live-token") || "";
+    } catch {
+      return "";
+    }
+  }
+
+  async function api(path, { method = "GET", body, tokenRetry = false } = {}) {
     const options = { method, headers: {}, cache: "no-store" };
+    const token = storedDashboardToken();
+    if (token) {
+      options.headers["X-Dashboard-Token"] = token;
+    }
     if (method !== "GET") {
       options.headers["Content-Type"] = "application/json";
       options.body = JSON.stringify(body ?? {});
     }
     const response = await fetch(path, options);
+    if (response.status === 401 && !tokenRetry && !tokenPromptActive && !tokenPromptDismissed) {
+      try {
+        await response.body?.cancel();
+      } catch {
+        // Ignore a body that is already consumed.
+      }
+      tokenPromptActive = true;
+      const entered = window.prompt("This dashboard requires a token. Enter it to continue.");
+      tokenPromptActive = false;
+      if (entered) {
+        try {
+          sessionStorage.setItem("twitch-live-token", entered.trim());
+        } catch {
+          // Ignore storage restrictions.
+        }
+        return api(path, { method, body, tokenRetry: true });
+      }
+      tokenPromptDismissed = true;
+    }
     let data = {};
     try {
       data = await response.json();
@@ -481,12 +530,18 @@
         : '<span class="badge badge-offline">Offline</span>';
 
     const destinationControls = webhooks.length
-      ? `<div class="destination-checks">${webhooks.map((webhook) => `
-          <label class="destination-check ${webhook.enabled ? "" : "is-disabled"}">
-            <input type="checkbox" data-action="toggle-destination" data-channel="${channel.id}" data-webhook="${webhook.id}" ${assigned.has(webhook.id) ? "checked" : ""}>
-            <span>${escapeHTML(webhook.label)}</span>
-            ${webhook.enabled ? "" : '<span class="badge badge-disabled">Paused</span>'}
-          </label>`).join("")}</div>`
+      ? `<div class="destination-checks">${webhooks.map((webhook) => {
+          const destination = (channel.destinations || []).find((item) => item.webhook_id === webhook.id);
+          const customTemplate = Boolean(destination?.template);
+          return `<div class="destination-check-row">
+            <label class="destination-check ${webhook.enabled ? "" : "is-disabled"}">
+              <input type="checkbox" data-action="toggle-destination" data-channel="${channel.id}" data-webhook="${webhook.id}" ${assigned.has(webhook.id) ? "checked" : ""}>
+              <span>${escapeHTML(webhook.label)}</span>
+              ${webhook.enabled ? "" : '<span class="badge badge-disabled">Paused</span>'}
+            </label>
+            ${assigned.has(webhook.id) ? `<button type="button" class="btn btn-small btn-ghost" data-action="edit-route-template" data-channel="${channel.id}" data-webhook="${webhook.id}">${icon("edit")} ${customTemplate ? "Custom template" : "Template"}</button>` : ""}
+          </div>`;
+        }).join("")}</div>`
       : `<div class="warning-box">${icon("send")} Add a Discord destination first, then choose it here.</div>`;
 
     const liveBlock = status.live
@@ -569,6 +624,21 @@
     const lastSuccess = webhook.last_success_at
       ? ` · last success ${formatRelative(webhook.last_success_at)}`
       : "";
+    const lifecycle = [];
+    if (webhook.update_seconds > 0) {
+      lifecycle.push(`Live updates every ${formatInterval(webhook.update_seconds)}`);
+    }
+    if (webhook.cleanup?.mode) {
+      const labels = {
+        delete: "delete the live post",
+        edit: "edit the live post",
+        post: "post an ended message",
+      };
+      lifecycle.push(`Stream end: ${labels[webhook.cleanup.mode] || webhook.cleanup.mode}`);
+    }
+    const lifecycleLine = lifecycle.length
+      ? `<div class="meta" style="margin-top:6px">${lifecycle.map((item) => escapeHTML(item)).join(" · ")}</div>`
+      : "";
     return `
       <article class="destination-card">
         <div class="destination-head">
@@ -581,6 +651,7 @@
         </div>
         <div class="template-preview-line"><strong>Message:</strong> ${escapeHTML(summary)}</div>
         ${(webhook.role_ids || []).length ? `<div class="meta" style="margin-top:6px">Role pings: ${(webhook.role_ids || []).map((id) => `<code class="discord-id">${escapeHTML(id)}</code>`).join(" ")}</div>` : ""}
+        ${lifecycleLine}
         <div class="meta" style="margin-top:8px">${connected} streamer${connected === 1 ? "" : "s"} connected${lastSuccess}</div>
         ${error}
         <div class="destination-actions">
@@ -608,6 +679,8 @@
     const windowsTools = state.platform === "windows"
       ? `<button class="btn btn-ghost" data-action="open-data-folder">${icon("folder")} Open data folder</button>`
       : "";
+    const token = storedDashboardToken();
+    const tokenQuery = token ? `?token=${encodeURIComponent(token)}` : "";
 
     $("#view-settings").innerHTML = `
       <div class="settings-grid section">
@@ -648,8 +721,30 @@
             <div class="card-head"><div><h3>Local data</h3><p>Your settings never leave this computer.</p></div></div>
             <div class="card-body">
               <div class="data-path">${escapeHTML(state.data_dir)}</div>
-              <p class="field-hint" style="margin:9px 0 0">Webhook URLs are stored in this file. Keep it private.</p>
+              <p class="field-hint" style="margin:9px 0 0">Webhook URLs are moved into an encrypted secret store where your OS keychain is available, with a private 0600 key file as a fallback. Backups redact them by default.</p>
+              <div class="settings-actions">
+                <a class="btn btn-ghost" href="/api/config/export${tokenQuery}" download>${icon("download")} Download backup</a>
+                <button class="btn btn-ghost" data-action="export-secrets">${icon("download")} With secrets</button>
+                <button class="btn btn-ghost" data-action="import-config">${icon("upload")} Restore backup</button>
+                <input id="config-import" type="file" accept="application/json,.json" style="display:none">
+              </div>
               <div class="settings-actions">${windowsTools}<button class="btn btn-danger" data-action="quit-app">${icon("power")} Quit app</button></div>
+            </div>
+          </section>
+          <section class="card" style="margin-top:16px">
+            <div class="card-head"><div><h3>Dashboard access</h3><p>Optional token for dashboards exposed beyond loopback.</p></div></div>
+            <div class="card-body">
+              <form id="dashboard-token-form">
+                <label class="field">
+                  <span class="field-label">Dashboard token</span>
+                  <input id="dashboard-token" class="input input-mono" type="password" placeholder="${state.dashboard_token_set ? "Enter a new token" : "At least 4 characters"}" autocomplete="new-password">
+                  <span class="field-hint">${state.dashboard_token_set ? "A token is required for API changes. Enter a new one to replace it." : "No token required. The dashboard stays on loopback by default."}</span>
+                </label>
+                <div class="settings-actions">
+                  <button class="btn btn-primary" type="submit">${icon("check")} Save token</button>
+                  ${state.dashboard_token_set ? `<button class="btn btn-danger" data-action="clear-dashboard-token">${icon("trash")} Remove token</button>` : ""}
+                </div>
+              </form>
             </div>
           </section>
           <section class="card" style="margin-top:16px">
@@ -689,6 +784,72 @@
 
   function roleIDsText(roleIDs) {
     return (roleIDs || []).join(", ");
+  }
+
+  function parseCustomFields(value) {
+    return String(value || "")
+      .split("\n")
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .map((line) => {
+        const parts = line.split("|").map((part) => part.trim());
+        return {
+          name: parts[0] || "",
+          value: parts[1] || "",
+          inline: /^(inline|yes|true|1)$/i.test(parts[2] || ""),
+        };
+      })
+      .filter((field) => field.name || field.value);
+  }
+
+  function customFieldsText(fields) {
+    return (fields || [])
+      .map((field) => `${field.name || ""} | ${field.value || ""}${field.inline ? " | inline" : ""}`)
+      .join("\n");
+  }
+
+  function parseFieldOrder(value) {
+    return String(value || "")
+      .split(/[\s,]+/)
+      .map((part) => part.trim())
+      .filter(Boolean);
+  }
+
+  function fieldOrderText(order) {
+    return (order || []).join(", ");
+  }
+
+  function defaultFieldOrder(template) {
+    const builtIns = [];
+    if (template?.show_game) {
+      builtIns.push("game");
+    }
+    if (template?.show_viewers) {
+      builtIns.push("viewers");
+    }
+    if (template?.show_live_since) {
+      builtIns.push("live");
+    }
+    return builtIns.join(", ");
+  }
+
+  function parseButtons(value) {
+    return String(value || "")
+      .split("\n")
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .map((line) => {
+        const separator = line.indexOf("|");
+        if (separator < 0) {
+          return { label: line, url: "" };
+        }
+        return { label: line.slice(0, separator).trim(), url: line.slice(separator + 1).trim() };
+      })
+      .filter((button) => button.label || button.url);
+  }
+
+  function buttonsText(buttons) {
+    return (buttons || []).map((button) => `${button.label || ""} | ${button.url || ""}`).join("\n");
   }
 
   function templatePingStreamer(template) {
@@ -779,25 +940,40 @@
       clearTimeout(previewTimer);
       previewTimer = null;
     }
+    if (routePreviewTimer) {
+      clearTimeout(routePreviewTimer);
+      routePreviewTimer = null;
+    }
     previewSequence++;
+    routePreviewSequence++;
     lastFocusedField = null;
   }
 
-  function openWebhookModal(webhookId = "") {
-    const existing = webhookId ? webhookById(webhookId) : null;
-    const template = { ...(state.default_template || {}), ...(existing?.template || {}) };
+  function openWebhookModal(webhookId = "", { duplicate = false } = {}) {
+    const source = webhookId ? webhookById(webhookId) : null;
+    const existing = duplicate ? null : source;
+    const prefill = source;
+    const template = { ...(state.default_template || {}), ...(prefill?.template || {}) };
     const channels = state.config.channels || [];
     const previewOptions = channels.length
       ? channels.map((channel) => `<option value="${channel.id}">${escapeHTML(channel.display_name || channel.login)}</option>`).join("")
       : '<option value="">Sample stream</option>';
-    const modalTitle = existing ? "Edit destination" : "New destination";
-    const modalSubtitle = existing
-      ? "Change the label, webhook, or message style."
-      : "Pick a Discord webhook and make the alert your own.";
+    const modalTitle = duplicate ? "Duplicate destination" : existing ? "Edit destination" : "New destination";
+    const modalSubtitle = duplicate
+      ? "Settings copied. Add a different Discord webhook URL and save."
+      : existing
+        ? "Change the label, webhook, or message style."
+        : "Pick a Discord webhook and make the alert your own.";
+    const labelValue = duplicate ? `${source?.label || "Destination"} copy` : (existing?.label || "");
+    const urlValue = duplicate ? "" : (prefill?.url || "");
     const enabled = existing ? existing.enabled : true;
-    const roleIDs = existing?.role_ids || [];
+    const roleIDs = prefill?.role_ids || [];
     const pingStreamer = templatePingStreamer(template);
     const pingRoles = templatePingRoles(template);
+    const updateSeconds = prefill?.update_seconds || 0;
+    const cleanup = prefill?.cleanup || {};
+    const cleanupMode = cleanup.mode || "off";
+    const endedTemplate = { ...(state.default_ended_template || {}), ...(cleanup.template || {}) };
 
     openModal(`
       <div class="modal-head">
@@ -810,14 +986,38 @@
             <div class="form-grid">
               <label class="field">
                 <span class="field-label">Label</span>
-                <input id="wh-label" class="input" value="${escapeHTML(existing?.label || "")}" placeholder="Community #live" autocomplete="off">
+                <input id="wh-label" class="input" value="${escapeHTML(labelValue)}" placeholder="Community #live" autocomplete="off">
                 <span class="field-hint">This is what you see when choosing where alerts go.</span>
               </label>
               <label class="field">
                 <span class="field-label">Discord webhook URL <button type="button" class="placeholder-chip" data-action="toggle-url">Show</button></span>
-                <input id="wh-url" class="input input-mono" type="password" value="${escapeHTML(existing?.url || "")}" placeholder="https://discord.com/api/webhooks/..." autocomplete="off" spellcheck="false">
+                <input id="wh-url" class="input input-mono" type="password" value="${escapeHTML(urlValue)}" placeholder="https://discord.com/api/webhooks/..." autocomplete="off" spellcheck="false">
                 <span class="field-hint">Server Settings → Integrations → Webhooks → New Webhook → Copy URL.</span>
               </label>
+              <div class="form-grid two">
+                <label class="field">
+                  <span class="field-label">Webhook name</span>
+                  <input id="wh-username" class="input" value="${escapeHTML(prefill?.username || "")}" placeholder="Twitch Live" autocomplete="off">
+                  <span class="field-hint">Optional display name for this destination.</span>
+                </label>
+                <label class="field">
+                  <span class="field-label">Avatar URL</span>
+                  <input id="wh-avatar" class="input input-mono" value="${escapeHTML(prefill?.avatar_url || "")}" placeholder="https://example.com/avatar.png" autocomplete="off" spellcheck="false">
+                  <span class="field-hint">Optional image shown beside the message.</span>
+                </label>
+              </div>
+              <div class="form-grid two">
+                <label class="field">
+                  <span class="field-label">Thread ID</span>
+                  <input id="wh-thread" class="input input-mono" value="${escapeHTML(prefill?.thread_id || "")}" placeholder="123456789012345678" autocomplete="off" spellcheck="false">
+                  <span class="field-hint">Optional. Post into an existing Discord thread or forum post.</span>
+                </label>
+                <label class="field">
+                  <span class="field-label">Link buttons</span>
+                  <textarea id="wh-buttons" class="textarea" rows="4" placeholder="Watch on Twitch | {url}">${escapeHTML(buttonsText(prefill?.buttons))}</textarea>
+                  <span class="field-hint">One per line: <code>Label | https://…</code>. Up to five.</span>
+                </label>
+              </div>
               <div class="switch-row">
                 <div class="switch-copy"><strong>Destination active</strong><span>When paused, alerts are not sent here.</span></div>
                 <label class="switch"><input id="wh-enabled" type="checkbox" ${enabled ? "checked" : ""}><span class="switch-track"></span></label>
@@ -885,6 +1085,78 @@
                   ${toggleRow("tpl-live", "Live time field", template.show_live_since)}
                 </div>
               </div>
+
+              <div class="settings-section">
+                <div class="field-label" style="margin-bottom:7px">Custom fields and order</div>
+                <div class="form-grid two">
+                  <label class="field">
+                    <span class="field-label">Custom embed fields</span>
+                    <textarea id="tpl-custom-fields" class="textarea" rows="3" placeholder="Schedule | Every Saturday | inline">${escapeHTML(customFieldsText(template.custom_fields))}</textarea>
+                    <span class="field-hint">One per line: <code>Name | Value | inline</code>. Placeholders work in both columns.</span>
+                  </label>
+                  <label class="field">
+                    <span class="field-label">Field order</span>
+                    <input id="tpl-field-order" class="input input-mono" value="${escapeHTML(fieldOrderText(template.field_order) || defaultFieldOrder(template))}" placeholder="game, viewers, live, custom:0">
+                    <span class="field-hint">Comma separated: <code>game</code>, <code>viewers</code>, <code>live</code>, <code>custom:0</code>.</span>
+                  </label>
+                </div>
+              </div>
+
+              <div class="settings-section">
+                <div class="field-label" style="margin-bottom:7px">Stream lifecycle</div>
+                <div class="form-grid two">
+                  <label class="field">
+                    <span class="field-label">Update the live message</span>
+                    <select id="wh-update-seconds" class="select">
+                      ${updateIntervalOptions(updateSeconds)}
+                    </select>
+                    <span class="field-hint">Edits the same Discord message. Off leaves it untouched.</span>
+                  </label>
+                  <label class="field">
+                    <span class="field-label">When the stream ends</span>
+                    <select id="wh-cleanup-mode" class="select">
+                      <option value="off" ${cleanupMode === "off" ? "selected" : ""}>Leave the live message</option>
+                      <option value="delete" ${cleanupMode === "delete" ? "selected" : ""}>Delete the live message</option>
+                      <option value="edit" ${cleanupMode === "edit" ? "selected" : ""}>Edit it into an ended message</option>
+                      <option value="post" ${cleanupMode === "post" ? "selected" : ""}>Post a separate ended message</option>
+                    </select>
+                    <span class="field-hint">Uses the original message and webhook token, even if the URL changes later.</span>
+                  </label>
+                </div>
+                <div id="ended-template-fields" class="settings-section">
+                  <div class="field-label" style="margin-bottom:7px">Stream-ended message</div>
+                  <label class="field">
+                    <span class="field-label">Message content</span>
+                    <textarea id="end-content" class="textarea" maxlength="${MAX.content}">${escapeHTML(endedTemplate.content || "")}</textarea>
+                  </label>
+                  <div class="form-grid two">
+                    <label class="field">
+                      <span class="field-label">Embed title</span>
+                      <input id="end-title" class="input" maxlength="${MAX.title}" value="${escapeHTML(endedTemplate.embed_title || "")}">
+                    </label>
+                    <label class="field">
+                      <span class="field-label">Embed color</span>
+                      <span style="display:flex;gap:8px;align-items:center">
+                        <input id="end-color" type="color" value="${safeColor(endedTemplate.color)}" style="width:44px;height:38px;padding:2px;border:1px solid var(--border);border-radius:9px;background:transparent">
+                        <input id="end-color-text" class="input input-mono" value="${safeColor(endedTemplate.color)}" style="flex:1">
+                      </span>
+                    </label>
+                  </div>
+                  <label class="field">
+                    <span class="field-label">Embed description</span>
+                    <textarea id="end-description" class="textarea" maxlength="${MAX.description}">${escapeHTML(endedTemplate.embed_description || "")}</textarea>
+                    <span class="field-hint">Try <code>{vod}</code> for the latest VOD link, or <code>{title}</code> and <code>{game}</code>.</span>
+                  </label>
+                  <label class="field">
+                    <span class="field-label">Footer</span>
+                    <input id="end-footer" class="input" maxlength="${MAX.footer}" value="${escapeHTML(endedTemplate.footer || "")}">
+                  </label>
+                  <div class="switch-row" style="padding:6px 0">
+                    <div class="switch-copy"><strong>Preview the ended message</strong><span>Shows what Discord will display after the stream ends.</span></div>
+                    <label class="switch"><input id="preview-ended" type="checkbox"><span class="switch-track"></span></label>
+                  </div>
+                </div>
+              </div>
             </div>
 
             <div class="preview-panel">
@@ -899,6 +1171,10 @@
           <button type="button" class="btn btn-ghost" data-action="universal-close">Cancel</button>
           <div class="modal-foot-right">
             <button type="button" class="btn btn-ghost" data-action="reset-template">${icon("refresh")} Reset style</button>
+            <button type="button" class="btn btn-ghost" data-action="export-template">${icon("download")} Export</button>
+            <button type="button" class="btn btn-ghost" data-action="import-template">${icon("upload")} Import</button>
+            <input id="template-import" type="file" accept="application/json,.json" style="display:none">
+            ${existing ? `<button type="button" class="btn btn-ghost" data-action="duplicate-webhook" data-webhook="${existing.id}">${icon("copy")} Duplicate</button>` : ""}
             ${existing ? `<button type="button" class="btn btn-ghost" data-action="test-webhook" data-webhook="${existing.id}">${icon("send")} Send test</button>` : ""}
             <button type="submit" class="btn btn-primary">${icon("check")} ${existing ? "Save destination" : "Add destination"}</button>
           </div>
@@ -937,9 +1213,16 @@
         schedulePreview();
       });
     });
-    const colorText = $("#tpl-color-text");
-    const colorPicker = $("#tpl-color");
-    if (colorText && colorPicker) {
+    const colorPairs = [
+      ["#tpl-color-text", "#tpl-color"],
+      ["#end-color-text", "#end-color"],
+    ];
+    colorPairs.forEach(([textSelector, pickerSelector]) => {
+      const colorText = $(textSelector);
+      const colorPicker = $(pickerSelector);
+      if (!colorText || !colorPicker) {
+        return;
+      }
       colorText.addEventListener("input", () => {
         if (/^#[0-9a-fA-F]{6}$/.test(colorText.value)) {
           colorPicker.value = colorText.value;
@@ -948,9 +1231,233 @@
       colorPicker.addEventListener("input", () => {
         colorText.value = colorPicker.value;
       });
+    });
+    const cleanupMode = $("#wh-cleanup-mode");
+    if (cleanupMode) {
+      cleanupMode.addEventListener("change", syncEndedFields);
     }
+    syncEndedFields();
     updateCounters();
     schedulePreview();
+  }
+
+  function openRouteTemplateModal(channelId, webhookId) {
+    const channel = channelById(channelId);
+    const webhook = webhookById(webhookId);
+    if (!channel || !webhook) {
+      return;
+    }
+    const destination = (channel.destinations || []).find((item) => item.webhook_id === webhookId);
+    const custom = Boolean(destination?.template);
+    const template = { ...(state.default_template || {}), ...(custom ? destination.template : webhook.template) };
+    const previewOptions = (state.config.channels || [])
+      .map((item) => `<option value="${item.id}" ${item.id === channel.id ? "selected" : ""}>${escapeHTML(item.display_name || item.login)}</option>`)
+      .join("") || '<option value="">Sample stream</option>';
+
+    openModal(`
+      <div class="modal-head">
+        <div><h2>Route template</h2><p>${escapeHTML(channel.display_name || channel.login)} → ${escapeHTML(webhook.label)}. This only changes this route.</p></div>
+        <button class="modal-close" data-action="close-modal" aria-label="Close">${icon("x")}</button>
+      </div>
+      <form id="route-template-form" data-channel-id="${channel.id}" data-webhook-id="${webhook.id}">
+        <div class="modal-body">
+          <div class="modal-split">
+            <div class="form-grid">
+              <div class="warning-box">${icon("bell")}<span>${custom ? "This route has its own template. Clearing it falls back to the destination template." : "Saving here creates an override for this route only. The destination template stays unchanged."}</span></div>
+              <label class="field">
+                <span class="field-label">Message content</span>
+                <textarea id="route-content" class="textarea" maxlength="${MAX.content}">${escapeHTML(template.content || "")}</textarea>
+              </label>
+              <div class="form-grid two">
+                <label class="field">
+                  <span class="field-label">Embed title</span>
+                  <input id="route-title" class="input" maxlength="${MAX.title}" value="${escapeHTML(template.embed_title || "")}">
+                </label>
+                <label class="field">
+                  <span class="field-label">Embed color</span>
+                  <span style="display:flex;gap:8px;align-items:center">
+                    <input id="route-color" type="color" value="${safeColor(template.color)}" style="width:44px;height:38px;padding:2px;border:1px solid var(--border);border-radius:9px;background:transparent">
+                    <input id="route-color-text" class="input input-mono" value="${safeColor(template.color)}" style="flex:1">
+                  </span>
+                </label>
+              </div>
+              <label class="field">
+                <span class="field-label">Embed description</span>
+                <textarea id="route-description" class="textarea" maxlength="${MAX.description}">${escapeHTML(template.embed_description || "")}</textarea>
+              </label>
+              <label class="field">
+                <span class="field-label">Footer</span>
+                <input id="route-footer" class="input" maxlength="${MAX.footer}" value="${escapeHTML(template.footer || "")}">
+              </label>
+              <div class="settings-section">
+                <div class="field-label" style="margin-bottom:4px">Embed details</div>
+                <div class="form-grid two">
+                  ${toggleRow("route-author", "Author", template.show_author)}
+                  ${toggleRow("route-image", "Preview image", template.show_image)}
+                  ${toggleRow("route-game", "Game field", template.show_game)}
+                  ${toggleRow("route-viewers", "Viewers field", template.show_viewers)}
+                  ${toggleRow("route-live", "Live time field", template.show_live_since)}
+                </div>
+              </div>
+              <div class="form-grid two">
+                <label class="field">
+                  <span class="field-label">Custom embed fields</span>
+                  <textarea id="route-custom-fields" class="textarea" rows="3" placeholder="Schedule | Every Saturday | inline">${escapeHTML(customFieldsText(template.custom_fields))}</textarea>
+                  <span class="field-hint">One per line: <code>Name | Value | inline</code>.</span>
+                </label>
+                <label class="field">
+                  <span class="field-label">Field order</span>
+                  <input id="route-field-order" class="input input-mono" value="${escapeHTML(fieldOrderText(template.field_order) || defaultFieldOrder(template))}" placeholder="game, viewers, live, custom:0">
+                  <span class="field-hint">Comma separated built-ins and <code>custom:N</code>.</span>
+                </label>
+              </div>
+              <div class="placeholder-row">
+                ${(state.placeholders || []).map((placeholder) => `<button type="button" class="placeholder-chip" data-action="insert-route-placeholder" data-token="${escapeHTML(placeholder.token)}" title="${escapeHTML(placeholder.description)}">${escapeHTML(placeholder.token)}</button>`).join("")}
+              </div>
+            </div>
+            <div class="preview-panel">
+              <h3>Live route preview</h3>
+              <select id="route-preview-channel" class="select preview-select">${previewOptions}</select>
+              <div id="route-discord-preview" class="discord-preview"></div>
+              <div id="route-preview-warning"></div>
+            </div>
+          </div>
+        </div>
+        <div class="modal-foot">
+          <button type="button" class="btn btn-ghost" data-action="universal-close">Cancel</button>
+          <div class="modal-foot-right">
+            ${custom ? `<button type="button" class="btn btn-ghost" data-action="clear-route-template" data-channel="${channel.id}" data-webhook="${webhook.id}">${icon("refresh")} Use destination template</button>` : ""}
+            <button type="submit" class="btn btn-primary">${icon("check")} Save route template</button>
+          </div>
+        </div>
+      </form>
+    `);
+
+    const panel = $(".modal");
+    if (!panel) {
+      return;
+    }
+    panel.addEventListener("focusin", (event) => {
+      if (event.target.matches("input, textarea, select")) {
+        routeLastFocusedField = event.target;
+      }
+    });
+    $$("input, textarea, select", panel).forEach((field) => {
+      field.addEventListener("input", scheduleRoutePreview);
+      field.addEventListener("change", scheduleRoutePreview);
+    });
+    const colorPairs = [
+      ["#route-color-text", "#route-color"],
+    ];
+    colorPairs.forEach(([textSelector, pickerSelector]) => {
+      const colorText = $(textSelector);
+      const colorPicker = $(pickerSelector);
+      if (!colorText || !colorPicker) {
+        return;
+      }
+      colorText.addEventListener("input", () => {
+        if (/^#[0-9a-fA-F]{6}$/.test(colorText.value)) {
+          colorPicker.value = colorText.value;
+        }
+      });
+      colorPicker.addEventListener("input", () => {
+        colorText.value = colorPicker.value;
+      });
+    });
+    routeLastFocusedField = $("#route-content");
+    scheduleRoutePreview();
+  }
+
+  function readRouteTemplate() {
+    return {
+      content: $("#route-content")?.value || "",
+      embed_title: $("#route-title")?.value || "",
+      embed_description: $("#route-description")?.value || "",
+      footer: $("#route-footer")?.value || "",
+      color: safeColor($("#route-color-text")?.value || $("#route-color")?.value),
+      show_author: Boolean($("#route-author")?.checked),
+      show_image: Boolean($("#route-image")?.checked),
+      show_game: Boolean($("#route-game")?.checked),
+      show_viewers: Boolean($("#route-viewers")?.checked),
+      show_live_since: Boolean($("#route-live")?.checked),
+      custom_fields: parseCustomFields($("#route-custom-fields")?.value || ""),
+      field_order: parseFieldOrder($("#route-field-order")?.value || ""),
+    };
+  }
+
+  function scheduleRoutePreview() {
+    if (routePreviewTimer) {
+      clearTimeout(routePreviewTimer);
+    }
+    routePreviewTimer = setTimeout(updateRoutePreview, 180);
+  }
+
+  async function updateRoutePreview() {
+    const preview = $("#route-discord-preview");
+    if (!preview) {
+      return;
+    }
+    const sequence = ++routePreviewSequence;
+    const form = $("#route-template-form");
+    const channelId = $("#route-preview-channel")?.value || "";
+    const webhook = webhookById(form?.dataset.webhookId || "");
+    const template = readRouteTemplate();
+    const destinationTemplate = webhook?.template || {};
+    template.ping_streamer = destinationTemplate.ping_streamer;
+    template.ping_roles = destinationTemplate.ping_roles;
+    template.allow_everyone = destinationTemplate.allow_everyone;
+    try {
+      const data = await api("/api/preview", {
+        method: "POST",
+        body: {
+          template,
+          channel_id: channelId,
+          webhook_label: webhook?.label || "Discord",
+          role_ids: webhook?.role_ids || [],
+          username: webhook?.username || "",
+          avatar_url: webhook?.avatar_url || "",
+          thread_id: webhook?.thread_id || "",
+          buttons: webhook?.buttons || [],
+        },
+      });
+      if (sequence !== routePreviewSequence) {
+        return;
+      }
+      preview.innerHTML = renderDiscordPreview(data.payload, Boolean($("#route-image")?.checked));
+      const unknown = data.unknown_placeholders || [];
+      const currentTemplate = readRouteTemplate();
+      const empty = !currentTemplate.content.trim() && !currentTemplate.embed_title.trim() && !currentTemplate.embed_description.trim() && !(currentTemplate.custom_fields || []).length;
+      const messages = [];
+      if (unknown.length) {
+        messages.push(`Unknown placeholder${unknown.length === 1 ? "" : "s"}: ${unknown.join(", ")}`);
+      }
+      if (empty) {
+        messages.push("Nothing will be posted. Add message content, embed text, or a custom field.");
+      }
+      $("#route-preview-warning").innerHTML = messages.map((message) => `<div class="warning-box" style="margin-top:10px">${icon("bell")} <span>${escapeHTML(message)}</span></div>`).join("");
+    } catch (error) {
+      if (sequence !== routePreviewSequence) {
+        return;
+      }
+      preview.innerHTML = `<div class="empty-state" style="min-height:140px">${escapeHTML(error.message)}</div>`;
+    }
+  }
+
+  async function clearRouteTemplate(channelId, webhookId) {
+    if (!window.confirm("Use the destination template for this route? The custom override will be removed.")) {
+      return;
+    }
+    try {
+      state = await api(`/api/channels/${channelId}/destinations/${webhookId}`, {
+        method: "PUT",
+        body: { clear: true },
+      });
+      closeModal();
+      render();
+      toast("Route template override removed.", "info");
+    } catch (error) {
+      toast(error.message, "error");
+    }
   }
 
   function readTemplate() {
@@ -968,7 +1475,39 @@
       ping_streamer: Boolean($("#tpl-ping-streamer")?.checked),
       ping_roles: Boolean($("#tpl-ping-roles")?.checked),
       allow_everyone: Boolean($("#tpl-allow-everyone")?.checked),
+      custom_fields: parseCustomFields($("#tpl-custom-fields")?.value || ""),
+      field_order: parseFieldOrder($("#tpl-field-order")?.value || ""),
     };
+  }
+
+  function readEndedTemplate() {
+    return {
+      content: $("#end-content")?.value || "",
+      embed_title: $("#end-title")?.value || "",
+      embed_description: $("#end-description")?.value || "",
+      footer: $("#end-footer")?.value || "",
+      color: safeColor($("#end-color-text")?.value || $("#end-color")?.value),
+      show_author: true,
+      show_image: false,
+      show_game: false,
+      show_viewers: false,
+      show_live_since: true,
+      ping_streamer: false,
+      ping_roles: false,
+      allow_everyone: false,
+    };
+  }
+
+  function endedTemplateEnabled() {
+    const mode = $("#wh-cleanup-mode")?.value || "off";
+    return mode === "edit" || mode === "post";
+  }
+
+  function syncEndedFields() {
+    const fields = $("#ended-template-fields");
+    if (fields) {
+      fields.style.display = endedTemplateEnabled() ? "" : "none";
+    }
   }
 
   function fillTemplate(template) {
@@ -990,6 +1529,12 @@
     }
     if ($("#tpl-color-text")) {
       $("#tpl-color-text").value = color;
+    }
+    if ($("#tpl-custom-fields")) {
+      $("#tpl-custom-fields").value = customFieldsText(template.custom_fields);
+    }
+    if ($("#tpl-field-order")) {
+      $("#tpl-field-order").value = fieldOrderText(template.field_order) || defaultFieldOrder(template);
     }
     const toggles = {
       "tpl-author": template.show_author,
@@ -1043,7 +1588,8 @@
       return;
     }
     const sequence = ++previewSequence;
-    const template = readTemplate();
+    const endedPreview = Boolean($("#preview-ended")?.checked) && endedTemplateEnabled();
+    const template = endedPreview ? readEndedTemplate() : readTemplate();
     const channelId = $("#preview-channel")?.value || "";
     const webhookLabel = $("#wh-label")?.value || "Discord";
     const roleIDs = parseRoleIDs($("#wh-roles")?.value || "");
@@ -1055,6 +1601,11 @@
           channel_id: channelId,
           webhook_label: webhookLabel,
           role_ids: roleIDs,
+          username: $("#wh-username")?.value || "",
+          avatar_url: $("#wh-avatar")?.value || "",
+          thread_id: $("#wh-thread")?.value || "",
+          buttons: parseButtons($("#wh-buttons")?.value || ""),
+          ended: endedPreview,
         },
       });
       if (sequence !== previewSequence) {
@@ -1147,11 +1698,16 @@
     const imageHTML = image ? `<img class="discord-embed-image" src="${escapeHTML(image)}" alt="">` : "";
     const footer = embed?.footer?.text ? `<div class="discord-footer">${escapeHTML(embed.footer.text)}</div>` : "";
     const timestamp = new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+    const authorName = payload?.username || "Twitch Live";
+    const authorAvatar = safeURL(payload?.avatar_url || "") || "/static/icon.png";
+    const buttons = (payload?.components?.[0]?.components || [])
+      .map((button) => `<a class="discord-button" href="${escapeHTML(safeURL(button.url))}" target="_blank" rel="noopener">${escapeHTML(button.label)}</a>`)
+      .join("");
     return `
       <div class="discord-message">
-        <div class="discord-avatar"><img src="/static/icon.png" alt=""></div>
+        <div class="discord-avatar"><img src="${escapeHTML(authorAvatar)}" alt=""></div>
         <div class="discord-message-body">
-          <div class="discord-message-head"><span class="discord-author">Twitch Live</span><span class="discord-bot-tag">App</span><span class="discord-timestamp">Today at ${escapeHTML(timestamp)}</span></div>
+          <div class="discord-message-head"><span class="discord-author">${escapeHTML(authorName)}</span><span class="discord-bot-tag">App</span><span class="discord-timestamp">Today at ${escapeHTML(timestamp)}</span></div>
           ${content ? `<div class="discord-content">${discordMarkdown(content)}</div>` : ""}
           ${embed ? `<div class="discord-embed" style="border-left-color:${color}">
             ${author.name ? `<div class="discord-embed-author">${authorIcon ? `<img src="${escapeHTML(authorIcon)}" alt="">` : ""}${escapeHTML(author.name)}</div>` : ""}
@@ -1161,6 +1717,7 @@
             ${imageHTML || (showImage ? `<div class="discord-empty-image">Twitch preview appears here</div>` : "")}
             ${footer}
           </div>` : ""}
+          ${buttons ? `<div class="discord-buttons">${buttons}</div>` : ""}
         </div>
       </div>`;
   }
@@ -1367,17 +1924,80 @@ function openSampleModal(channelId) {
     `, { narrow: true });
   }
 
-  function insertPlaceholder(token) {
-    const field = lastFocusedField || $("#tpl-content");
-    if (!field) {
+  function insertPlaceholder(token, field) {
+    const target = field || lastFocusedField || $("#tpl-content");
+    if (!target) {
       return;
     }
-    const start = field.selectionStart ?? field.value.length;
-    const end = field.selectionEnd ?? start;
-    field.value = `${field.value.slice(0, start)}${token}${field.value.slice(end)}`;
-    field.focus();
-    field.selectionStart = field.selectionEnd = start + token.length;
-    field.dispatchEvent(new Event("input", { bubbles: true }));
+    const start = target.selectionStart ?? target.value.length;
+    const end = target.selectionEnd ?? start;
+    target.value = `${target.value.slice(0, start)}${token}${target.value.slice(end)}`;
+    target.focus();
+    target.selectionStart = target.selectionEnd = start + token.length;
+    target.dispatchEvent(new Event("input", { bubbles: true }));
+  }
+
+  function insertRoutePlaceholder(token) {
+    insertPlaceholder(token, routeLastFocusedField || $("#route-content"));
+  }
+
+  function exportTemplate() {
+    const template = readTemplate();
+    const blob = new Blob([JSON.stringify(template, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = "twitch-live-template.json";
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+    toast("Template exported.", "success");
+  }
+
+  async function importConfig(file) {
+    if (!file) {
+      return;
+    }
+    if (!window.confirm("Restore this backup? It replaces your current streamers, destinations, routing, templates, and filters.")) {
+      return;
+    }
+    try {
+      const text = await file.text();
+      const headers = { "Content-Type": "application/json" };
+      const token = storedDashboardToken();
+      if (token) {
+        headers["X-Dashboard-Token"] = token;
+      }
+      const response = await fetch("/api/config/import", {
+        method: "POST",
+        headers,
+        body: text,
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(data.error || `Restore failed (${response.status})`);
+      }
+      state = data;
+      applyTheme(state.config.settings.theme);
+      render();
+      toast("Backup restored. Re-enter any redacted webhook URLs.", "success");
+    } catch (error) {
+      toast(error.message, "error");
+    }
+  }
+
+  async function importTemplate(file) {
+    if (!file) {
+      return;
+    }
+    try {
+      const data = JSON.parse(await file.text());
+      fillTemplate({ ...(state.default_template || {}), ...data });
+      toast("Template imported into the editor.", "success");
+    } catch {
+      toast("That file is not a valid template JSON export.", "error");
+    }
   }
 
   async function toggleTheme() {
@@ -1487,6 +2107,15 @@ function openSampleModal(channelId) {
         fillTemplate(state.default_template);
         toast("Style reset to the default template.", "info");
         break;
+      case "export-template":
+        exportTemplate();
+        break;
+      case "import-template":
+        $("#template-import")?.click();
+        break;
+      case "duplicate-webhook":
+        openWebhookModal(actionElement.dataset.webhook, { duplicate: true });
+        break;
       case "insert-placeholder":
         insertPlaceholder(actionElement.dataset.token);
         break;
@@ -1556,6 +2185,16 @@ function openSampleModal(channelId) {
       case "edit-filters":
         openFiltersModal(actionElement.dataset.channel);
         break;
+      case "edit-route-template":
+        event.preventDefault();
+        openRouteTemplateModal(actionElement.dataset.channel, actionElement.dataset.webhook);
+        break;
+      case "clear-route-template":
+        await clearRouteTemplate(actionElement.dataset.channel, actionElement.dataset.webhook);
+        break;
+      case "insert-route-placeholder":
+        insertRoutePlaceholder(actionElement.dataset.token);
+        break;
       case "sample-channel":
         openSampleModal(actionElement.dataset.channel);
         break;
@@ -1564,6 +2203,32 @@ function openSampleModal(channelId) {
           await api("/api/open-data-folder", { method: "POST", body: {} });
         } catch (error) {
           toast(error.message, "error");
+        }
+        break;
+      case "export-secrets":
+        if (window.confirm("Download a backup with live webhook URLs? Anyone with the file can post to those channels. Keep it private.")) {
+          const token = storedDashboardToken();
+          const suffix = token ? `&token=${encodeURIComponent(token)}` : "";
+          window.location.href = `/api/config/export?secrets=1${suffix}`;
+        }
+        break;
+      case "import-config":
+        $("#config-import")?.click();
+        break;
+      case "clear-dashboard-token":
+        if (window.confirm("Remove the dashboard token? Anyone who can reach the dashboard will be able to change settings.")) {
+          try {
+            state = await api("/api/dashboard-token", { method: "PUT", body: { token: "" } });
+            try {
+              sessionStorage.removeItem("twitch-live-token");
+            } catch {
+              // Ignore storage restrictions.
+            }
+            render();
+            toast("Dashboard token removed.", "info");
+          } catch (error) {
+            toast(error.message, "error");
+          }
         }
         break;
       case "quit-app":
@@ -1585,6 +2250,16 @@ function openSampleModal(channelId) {
 
   async function handleChange(event) {
     const target = event.target;
+    if (target.id === "template-import") {
+      await importTemplate(target.files?.[0]);
+      target.value = "";
+      return;
+    }
+    if (target.id === "config-import") {
+      await importConfig(target.files?.[0]);
+      target.value = "";
+      return;
+    }
     if (target.id === "tpl-allow-everyone" && target.checked) {
       const confirmed = window.confirm("Allow @everyone / @here for this destination? This can ping the whole server. Continue?");
       if (!confirmed) {
@@ -1665,6 +2340,38 @@ function openSampleModal(channelId) {
       return;
     }
 
+    if (event.target.id === "dashboard-token-form") {
+      event.preventDefault();
+      const button = $("button[type=submit]", event.target);
+      const token = $("#dashboard-token")?.value.trim() || "";
+      button.disabled = true;
+      button.innerHTML = '<span class="spinner"></span> Saving…';
+      try {
+        state = await api("/api/dashboard-token", { method: "PUT", body: { token } });
+        tokenPromptDismissed = false;
+        if (token) {
+          try {
+            sessionStorage.setItem("twitch-live-token", token);
+          } catch {
+            // Ignore storage restrictions.
+          }
+        } else {
+          try {
+            sessionStorage.removeItem("twitch-live-token");
+          } catch {
+            // Ignore storage restrictions.
+          }
+        }
+        render();
+        toast(token ? "Dashboard token saved." : "Dashboard token removed.", "success");
+      } catch (error) {
+        toast(error.message, "error");
+        button.disabled = false;
+        button.innerHTML = `${icon("check")} Save token`;
+      }
+      return;
+    }
+
     if (event.target.id === "settings-form") {
       event.preventDefault();
       const button = $("button[type=submit]", event.target);
@@ -1688,6 +2395,30 @@ function openSampleModal(channelId) {
       } finally {
         button.disabled = false;
         button.innerHTML = `${icon("check")} Save settings`;
+      }
+      return;
+    }
+
+    if (event.target.id === "route-template-form") {
+      event.preventDefault();
+      const form = event.target;
+      const channelId = form.dataset.channelId;
+      const webhookId = form.dataset.webhookId;
+      const button = $("button[type=submit]", form);
+      button.disabled = true;
+      button.innerHTML = '<span class="spinner"></span> Saving…';
+      try {
+        state = await api(`/api/channels/${channelId}/destinations/${webhookId}`, {
+          method: "PUT",
+          body: { template: readRouteTemplate() },
+        });
+        closeModal();
+        render();
+        toast("Route template saved.", "success");
+      } catch (error) {
+        toast(error.message, "error");
+        button.disabled = false;
+        button.innerHTML = `${icon("check")} Save route template`;
       }
       return;
     }
@@ -1723,12 +2454,23 @@ function openSampleModal(channelId) {
       button.disabled = true;
       button.innerHTML = '<span class="spinner"></span> Saving…';
       const template = readTemplate();
+      const cleanupMode = $("#wh-cleanup-mode")?.value || "off";
+      const cleanup = { mode: cleanupMode };
+      if (cleanupMode === "edit" || cleanupMode === "post") {
+        cleanup.template = readEndedTemplate();
+      }
       const body = {
         label: $("#wh-label").value.trim(),
         url: $("#wh-url").value.trim(),
         role_ids: parseRoleIDs($("#wh-roles")?.value || ""),
         enabled: $("#wh-enabled").checked,
         template,
+        username: $("#wh-username")?.value.trim() || "",
+        avatar_url: $("#wh-avatar")?.value.trim() || "",
+        thread_id: $("#wh-thread")?.value.trim() || "",
+        buttons: parseButtons($("#wh-buttons")?.value || ""),
+        update_seconds: Number($("#wh-update-seconds")?.value) || 0,
+        cleanup,
       };
       try {
         state = await api(id ? `/api/webhooks/${id}` : "/api/webhooks", {

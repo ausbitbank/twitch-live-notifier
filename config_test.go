@@ -130,6 +130,10 @@ func TestConfigRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("loadConfig returned error: %v", err)
 	}
+	if got.Webhooks[0].URLSecretID == "" {
+		t.Fatal("webhook URL was not moved into the secret store")
+	}
+	want.Webhooks[0].URLSecretID = got.Webhooks[0].URLSecretID
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("loaded config = %+v, want %+v", got, want)
 	}
@@ -164,6 +168,59 @@ func TestLegacyConfigMigration(t *testing.T) {
 	}
 	if cfg.Webhooks[0].Label != "Discord" || !cfg.Webhooks[0].Enabled {
 		t.Errorf("webhook = %+v", cfg.Webhooks[0])
+	}
+}
+
+func TestVersion3ConfigMigratesWithoutLosingDedupe(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	v3 := `{
+		"version": 3,
+		"channels": [{
+			"id": "channel1",
+			"login": "teststreamer",
+			"display_name": "TestStreamer",
+			"enabled": true,
+			"destinations": [{
+				"webhook_id": "webhook1",
+				"last_stream_id": "319913347671",
+				"last_posted_at": "2026-11-15T06:00:00Z"
+			}]
+		}],
+		"webhooks": [{
+			"id": "webhook1",
+			"label": "Community",
+			"url": "https://discord.com/api/webhooks/1234567890/abcdefghijklmnopqrstuvwxyz",
+			"enabled": true,
+			"template": {
+				"content": "{streamer} is live",
+				"embed_title": "{title}",
+				"embed_description": "",
+				"footer": "",
+				"color": "#9146FF",
+				"show_author": true,
+				"show_image": true,
+				"show_game": true,
+				"show_viewers": true,
+				"show_live_since": true
+			}
+		}],
+		"settings": {"poll_seconds": 120, "theme": "dark"}
+	}`
+	if err := os.WriteFile(path, []byte(v3), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := loadConfig(path)
+	if err != nil {
+		t.Fatalf("loadConfig returned error: %v", err)
+	}
+	if cfg.Version != configVersion {
+		t.Fatalf("version = %d", cfg.Version)
+	}
+	if len(cfg.Channels) != 1 || cfg.Channels[0].Destinations[0].LastStreamID != "319913347671" {
+		t.Fatalf("dedupe state = %+v", cfg.Channels)
+	}
+	if cfg.Webhooks[0].URL == "" || cfg.Webhooks[0].Cleanup.Mode != cleanupOff {
+		t.Fatalf("v3 webhook migration = %+v", cfg.Webhooks[0])
 	}
 }
 

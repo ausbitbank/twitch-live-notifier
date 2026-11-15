@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"net"
 	"net/http"
@@ -32,7 +33,7 @@ type dashboardServer struct {
 // the historical loopback default and port fallback. An explicit address (for
 // example 0.0.0.0:8787 in Docker) is bound exactly and fails loudly if busy.
 func startDashboard(app *App, onQuit func(), listen string) (*dashboardServer, error) {
-	handler := withSecurity(newDashboardHandler(app, onQuit))
+	handler := withSecurity(withDashboardAuth(app, newDashboardHandler(app, onQuit)))
 	var (
 		listener net.Listener
 		err      error
@@ -145,6 +146,40 @@ func runServerOnly(configPath, listen string) int {
 	dashboard.Shutdown(shutdownCtx)
 	_ = os.Remove(portFile)
 	return 0
+}
+
+type webhookRequest struct {
+	Label         string           `json:"label"`
+	URL           string           `json:"url"`
+	RoleIDs       []string         `json:"role_ids"`
+	Enabled       bool             `json:"enabled"`
+	Template      Template         `json:"template"`
+	Username      string           `json:"username"`
+	AvatarURL     string           `json:"avatar_url"`
+	ThreadID      string           `json:"thread_id"`
+	Buttons       []TemplateButton `json:"buttons"`
+	UpdateSeconds int              `json:"update_seconds"`
+	Cleanup       CleanupSettings  `json:"cleanup"`
+}
+
+func (r webhookRequest) input(defaultEnabled bool) WebhookInput {
+	enabled := r.Enabled
+	if defaultEnabled {
+		enabled = true
+	}
+	return WebhookInput{
+		Label:         r.Label,
+		URL:           r.URL,
+		RoleIDs:       r.RoleIDs,
+		Enabled:       enabled,
+		Template:      r.Template,
+		Username:      r.Username,
+		AvatarURL:     r.AvatarURL,
+		ThreadID:      r.ThreadID,
+		Buttons:       r.Buttons,
+		UpdateSeconds: r.UpdateSeconds,
+		Cleanup:       r.Cleanup,
+	}
 }
 
 func newDashboardHandler(app *App, onQuit func()) http.Handler {
@@ -266,6 +301,27 @@ func newDashboardHandler(app *App, onQuit func()) http.Handler {
 		}
 		writeJSON(w, http.StatusOK, app.State())
 	})
+	mux.HandleFunc("PUT /api/channels/{id}/destinations/{webhookID}", func(w http.ResponseWriter, r *http.Request) {
+		if !requireLocalJSON(w, r) {
+			return
+		}
+		var request struct {
+			Template *Template `json:"template"`
+			Clear    bool      `json:"clear"`
+		}
+		if !decodeJSON(w, r, &request) {
+			return
+		}
+		template := request.Template
+		if request.Clear {
+			template = nil
+		}
+		if err := app.SetRouteTemplate(r.PathValue("id"), r.PathValue("webhookID"), template); err != nil {
+			writeAPIError(w, http.StatusBadRequest, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, app.State())
+	})
 	mux.HandleFunc("POST /api/channels/{id}/sample", func(w http.ResponseWriter, r *http.Request) {
 		if !requireLocalJSON(w, r) {
 			return
@@ -290,16 +346,11 @@ func newDashboardHandler(app *App, onQuit func()) http.Handler {
 		if !requireLocalJSON(w, r) {
 			return
 		}
-		var request struct {
-			Label    string   `json:"label"`
-			URL      string   `json:"url"`
-			RoleIDs  []string `json:"role_ids"`
-			Template Template `json:"template"`
-		}
+		var request webhookRequest
 		if !decodeJSON(w, r, &request) {
 			return
 		}
-		if _, err := app.AddWebhook(request.Label, request.URL, request.RoleIDs, &request.Template); err != nil {
+		if _, err := app.AddWebhookInput(request.input(true)); err != nil {
 			writeAPIError(w, http.StatusBadRequest, err)
 			return
 		}
@@ -309,17 +360,11 @@ func newDashboardHandler(app *App, onQuit func()) http.Handler {
 		if !requireLocalJSON(w, r) {
 			return
 		}
-		var request struct {
-			Label    string   `json:"label"`
-			URL      string   `json:"url"`
-			RoleIDs  []string `json:"role_ids"`
-			Enabled  bool     `json:"enabled"`
-			Template Template `json:"template"`
-		}
+		var request webhookRequest
 		if !decodeJSON(w, r, &request) {
 			return
 		}
-		if _, err := app.UpdateWebhook(r.PathValue("id"), request.Label, request.URL, request.RoleIDs, request.Enabled, request.Template); err != nil {
+		if _, err := app.UpdateWebhookInput(r.PathValue("id"), request.input(false)); err != nil {
 			writeAPIError(w, http.StatusBadRequest, err)
 			return
 		}
@@ -351,15 +396,28 @@ func newDashboardHandler(app *App, onQuit func()) http.Handler {
 			return
 		}
 		var request struct {
-			Template     Template `json:"template"`
-			ChannelID    string   `json:"channel_id"`
-			WebhookLabel string   `json:"webhook_label"`
-			RoleIDs      []string `json:"role_ids"`
+			Template     Template         `json:"template"`
+			ChannelID    string           `json:"channel_id"`
+			WebhookLabel string           `json:"webhook_label"`
+			RoleIDs      []string         `json:"role_ids"`
+			Username     string           `json:"username"`
+			AvatarURL    string           `json:"avatar_url"`
+			ThreadID     string           `json:"thread_id"`
+			Buttons      []TemplateButton `json:"buttons"`
+			Ended        bool             `json:"ended"`
 		}
 		if !decodeJSON(w, r, &request) {
 			return
 		}
-		payload, unknown := app.Preview(request.Template, request.ChannelID, request.WebhookLabel, request.RoleIDs)
+		payload, unknown := app.PreviewWebhook(Webhook{
+			Label:     request.WebhookLabel,
+			Template:  request.Template,
+			RoleIDs:   request.RoleIDs,
+			Username:  request.Username,
+			AvatarURL: request.AvatarURL,
+			ThreadID:  request.ThreadID,
+			Buttons:   request.Buttons,
+		}, request.ChannelID, request.Ended)
 		writeJSON(w, http.StatusOK, map[string]any{
 			"payload":              payload,
 			"unknown_placeholders": unknown,
@@ -393,6 +451,53 @@ func newDashboardHandler(app *App, onQuit func()) http.Handler {
 			Paused:       request.Paused,
 			Theme:        request.Theme,
 		}); err != nil {
+			writeAPIError(w, http.StatusBadRequest, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, app.State())
+	})
+
+	mux.HandleFunc("GET /api/config/export", func(w http.ResponseWriter, r *http.Request) {
+		includeSecrets := r.URL.Query().Get("secrets") == "1"
+		data, err := app.ExportConfigJSON(includeSecrets)
+		if err != nil {
+			writeAPIError(w, http.StatusInternalServerError, err)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.Header().Set("Content-Disposition", "attachment; filename="+configExportFilename(includeSecrets))
+		w.Header().Set("Cache-Control", "no-store")
+		_, _ = w.Write(data)
+	})
+
+	mux.HandleFunc("POST /api/config/import", func(w http.ResponseWriter, r *http.Request) {
+		if !requireLocalJSON(w, r) {
+			return
+		}
+		r.Body = http.MaxBytesReader(w, r.Body, 5<<20)
+		data, err := io.ReadAll(r.Body)
+		if err != nil {
+			writeAPIError(w, http.StatusBadRequest, errors.New("could not read the backup file"))
+			return
+		}
+		if err := app.ImportConfig(data); err != nil {
+			writeAPIError(w, http.StatusBadRequest, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, app.State())
+	})
+
+	mux.HandleFunc("PUT /api/dashboard-token", func(w http.ResponseWriter, r *http.Request) {
+		if !requireLocalJSON(w, r) {
+			return
+		}
+		var request struct {
+			Token string `json:"token"`
+		}
+		if !decodeJSON(w, r, &request) {
+			return
+		}
+		if err := app.SetDashboardToken(request.Token); err != nil {
 			writeAPIError(w, http.StatusBadRequest, err)
 			return
 		}

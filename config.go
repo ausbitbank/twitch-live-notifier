@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"unicode/utf8"
 )
 
 type Config struct {
@@ -53,18 +54,72 @@ type Filters struct {
 }
 
 type Destination struct {
-	WebhookID    string `json:"webhook_id"`
-	LastStreamID string `json:"last_stream_id,omitempty"`
-	LastPostedAt string `json:"last_posted_at,omitempty"`
+	WebhookID    string       `json:"webhook_id"`
+	LastStreamID string       `json:"last_stream_id,omitempty"`
+	LastPostedAt string       `json:"last_posted_at,omitempty"`
+	Template     *Template    `json:"template,omitempty"`
+	LiveMessage  *LiveMessage `json:"live_message,omitempty"`
+}
+
+// LiveMessage records the Discord message posted for a stream on one route so
+// later checks can edit it, or delete/replace it when the stream ends. The
+// webhook URL is stored with the message because a destination's URL can be
+// changed later, and edits must still target the original post.
+type LiveMessage struct {
+	MessageID          string `json:"message_id"`
+	WebhookURL         string `json:"webhook_url,omitempty"`
+	WebhookURLSecretID string `json:"webhook_url_secret_id,omitempty"`
+	ThreadID           string `json:"thread_id,omitempty"`
+	StreamID           string `json:"stream_id,omitempty"`
+	Title              string `json:"title,omitempty"`
+	Game               string `json:"game,omitempty"`
+	VODURL             string `json:"vod_url,omitempty"`
+	StartedAt          string `json:"started_at,omitempty"`
+	PostedAt           string `json:"posted_at,omitempty"`
+	LastEditedAt       string `json:"last_edited_at,omitempty"`
+}
+
+// CleanupSettings controls what happens to the stored live message when a
+// stream ends. Mode is one of "", "delete", "edit", or "post".
+type CleanupSettings struct {
+	Mode     string    `json:"mode,omitempty"`
+	Template *Template `json:"template,omitempty"`
+}
+
+const (
+	cleanupOff    = ""
+	cleanupDelete = "delete"
+	cleanupEdit   = "edit"
+	cleanupPost   = "post"
+
+	minLiveUpdateSeconds = 60
+	maxLiveUpdateSeconds = 3600
+	maxWebhookButtons    = 5
+)
+
+// TemplateButton is a link button attached to a webhook message. Labels and
+// URLs may contain the normal message placeholders.
+type TemplateButton struct {
+	Label string `json:"label"`
+	URL   string `json:"url"`
 }
 
 type Webhook struct {
-	ID       string   `json:"id"`
-	Label    string   `json:"label"`
-	URL      string   `json:"url"`
-	Enabled  bool     `json:"enabled"`
-	RoleIDs  []string `json:"role_ids,omitempty"`
-	Template Template `json:"template"`
+	ID          string           `json:"id"`
+	Label       string           `json:"label"`
+	URL         string           `json:"url"`
+	URLSecretID string           `json:"url_secret_id,omitempty"`
+	URLRedacted bool             `json:"url_redacted,omitempty"`
+	Enabled     bool             `json:"enabled"`
+	RoleIDs     []string         `json:"role_ids,omitempty"`
+	Template    Template         `json:"template"`
+	Username    string           `json:"username,omitempty"`
+	AvatarURL   string           `json:"avatar_url,omitempty"`
+	ThreadID    string           `json:"thread_id,omitempty"`
+	Buttons     []TemplateButton `json:"buttons,omitempty"`
+
+	UpdateSeconds int             `json:"update_seconds,omitempty"`
+	Cleanup       CleanupSettings `json:"cleanup,omitempty"`
 
 	LastError           string `json:"last_error,omitempty"`
 	LastErrorAt         string `json:"last_error_at,omitempty"`
@@ -74,26 +129,51 @@ type Webhook struct {
 }
 
 type Template struct {
-	Content          string `json:"content"`
-	EmbedTitle       string `json:"embed_title"`
-	EmbedDescription string `json:"embed_description"`
-	Footer           string `json:"footer"`
-	Color            string `json:"color"`
-	ShowAuthor       bool   `json:"show_author"`
-	ShowImage        bool   `json:"show_image"`
-	ShowGame         bool   `json:"show_game"`
-	ShowViewers      bool   `json:"show_viewers"`
-	ShowLiveSince    bool   `json:"show_live_since"`
-	PingStreamer     *bool  `json:"ping_streamer,omitempty"`
-	PingRoles        *bool  `json:"ping_roles,omitempty"`
-	AllowEveryone    bool   `json:"allow_everyone,omitempty"`
+	Content          string          `json:"content"`
+	EmbedTitle       string          `json:"embed_title"`
+	EmbedDescription string          `json:"embed_description"`
+	Footer           string          `json:"footer"`
+	Color            string          `json:"color"`
+	ShowAuthor       bool            `json:"show_author"`
+	ShowImage        bool            `json:"show_image"`
+	ShowGame         bool            `json:"show_game"`
+	ShowViewers      bool            `json:"show_viewers"`
+	ShowLiveSince    bool            `json:"show_live_since"`
+	PingStreamer     *bool           `json:"ping_streamer,omitempty"`
+	PingRoles        *bool           `json:"ping_roles,omitempty"`
+	AllowEveryone    bool            `json:"allow_everyone,omitempty"`
+	CustomFields     []TemplateField `json:"custom_fields,omitempty"`
+	FieldOrder       []string        `json:"field_order,omitempty"`
+}
+
+type TemplateField struct {
+	Name   string `json:"name"`
+	Value  string `json:"value"`
+	Inline bool   `json:"inline,omitempty"`
 }
 
 type Settings struct {
-	PollSeconds  int    `json:"poll_seconds"`
-	StartAtLogin bool   `json:"start_at_login"`
-	Paused       bool   `json:"paused"`
-	Theme        string `json:"theme"`
+	PollSeconds        int    `json:"poll_seconds"`
+	StartAtLogin       bool   `json:"start_at_login"`
+	Paused             bool   `json:"paused"`
+	Theme              string `json:"theme"`
+	DashboardTokenHash string `json:"dashboard_token_hash,omitempty"`
+}
+
+// WebhookInput is the validated user-editable shape of a destination. It keeps
+// the HTTP handlers free of the growing list of individual webhook fields.
+type WebhookInput struct {
+	Label         string
+	URL           string
+	RoleIDs       []string
+	Enabled       bool
+	Template      Template
+	Username      string
+	AvatarURL     string
+	ThreadID      string
+	Buttons       []TemplateButton
+	UpdateSeconds int
+	Cleanup       CleanupSettings
 }
 
 var (
@@ -128,6 +208,126 @@ func defaultTemplate() Template {
 		PingStreamer:     &pingStreamer,
 		PingRoles:        &pingRoles,
 	}
+}
+
+func defaultEndedTemplate() Template {
+	pingStreamer := false
+	pingRoles := false
+	return Template{
+		Content:          "📴 **{streamer}**'s stream has ended.",
+		EmbedTitle:       "{title}",
+		EmbedDescription: "Thanks for watching! Last playing **{game}**.\n\n{vod}",
+		Footer:           appName,
+		Color:            "#2C2F33",
+		ShowAuthor:       true,
+		ShowImage:        false,
+		ShowGame:         false,
+		ShowViewers:      false,
+		ShowLiveSince:    true,
+		PingStreamer:     &pingStreamer,
+		PingRoles:        &pingRoles,
+	}
+}
+
+func normalizeCleanupSettings(cleanup CleanupSettings) CleanupSettings {
+	cleanup.Mode = strings.ToLower(strings.TrimSpace(cleanup.Mode))
+	switch cleanup.Mode {
+	case cleanupDelete, cleanupEdit, cleanupPost:
+	case cleanupOff, "off", "none":
+		cleanup.Mode = cleanupOff
+	default:
+		cleanup.Mode = cleanupOff
+	}
+	if cleanup.Mode == cleanupEdit || cleanup.Mode == cleanupPost {
+		if cleanup.Template == nil {
+			template := defaultEndedTemplate()
+			cleanup.Template = &template
+		} else {
+			cleanup.Template = normalizeEndedTemplate(*cleanup.Template)
+		}
+	} else {
+		cleanup.Template = nil
+	}
+	return cleanup
+}
+
+// normalizeEndedTemplate keeps the same limits as a live template but defaults
+// pings to off so closing a stream never pings a whole community by accident.
+func normalizeEndedTemplate(t Template) *Template {
+	if t.Color == "" {
+		t.Color = "#2C2F33"
+	}
+	if t.Content == "" && t.EmbedTitle == "" && t.EmbedDescription == "" &&
+		t.Footer == "" && !t.ShowAuthor && !t.ShowImage && !t.ShowGame &&
+		!t.ShowViewers && !t.ShowLiveSince && len(t.CustomFields) == 0 {
+		t = defaultEndedTemplate()
+		return &t
+	}
+	if t.PingStreamer == nil {
+		value := false
+		t.PingStreamer = &value
+	}
+	if t.PingRoles == nil {
+		value := false
+		t.PingRoles = &value
+	}
+	t.AllowEveryone = false
+	t.CustomFields = normalizeCustomFields(t.CustomFields)
+	t.FieldOrder = normalizeFieldOrder(t.FieldOrder, len(t.CustomFields))
+	return &t
+}
+
+func normalizeUpdateSeconds(seconds int) int {
+	if seconds <= 0 {
+		return 0
+	}
+	if seconds < minLiveUpdateSeconds {
+		return minLiveUpdateSeconds
+	}
+	if seconds > maxLiveUpdateSeconds {
+		return maxLiveUpdateSeconds
+	}
+	return seconds
+}
+
+// normalizeLiveMessage drops a record that cannot possibly be managed. Other
+// fields are retained so cleanup can still use the original title/game when
+// Twitch has already moved on to another broadcast.
+func normalizeLiveMessage(message *LiveMessage) *LiveMessage {
+	if message == nil {
+		return nil
+	}
+	message.MessageID = strings.TrimSpace(message.MessageID)
+	if message.MessageID == "" {
+		return nil
+	}
+	message.WebhookURL = strings.TrimSpace(message.WebhookURL)
+	message.ThreadID = strings.TrimSpace(message.ThreadID)
+	message.StreamID = strings.TrimSpace(message.StreamID)
+	message.Title = strings.TrimSpace(message.Title)
+	message.Game = strings.TrimSpace(message.Game)
+	message.VODURL = strings.TrimSpace(message.VODURL)
+	message.StartedAt = strings.TrimSpace(message.StartedAt)
+	message.PostedAt = strings.TrimSpace(message.PostedAt)
+	message.LastEditedAt = strings.TrimSpace(message.LastEditedAt)
+	return message
+}
+
+func cloneLiveMessage(message *LiveMessage) *LiveMessage {
+	if message == nil {
+		return nil
+	}
+	clone := *message
+	return &clone
+}
+
+func cloneCleanupSettings(cleanup CleanupSettings) CleanupSettings {
+	clone := cleanup
+	if cleanup.Template != nil {
+		template := cloneTemplate(*cleanup.Template)
+		clone.Template = &template
+	}
+	return clone
 }
 
 func defaultSettings() Settings {
@@ -194,6 +394,7 @@ func loadConfig(path string) (Config, error) {
 		cfg.Settings = *raw.Settings
 	}
 	migrateLegacyConfig(&cfg, raw)
+	resolveConfigSecrets(&cfg, filepath.Dir(path))
 	normalizeConfig(&cfg)
 	return cfg, nil
 }
@@ -277,6 +478,23 @@ func normalizeConfig(cfg *Config) {
 		}
 		webhook.RoleIDs = sanitizeRoleIDs(webhook.RoleIDs)
 		webhook.Template = normalizeTemplate(webhook.Template)
+		if username, avatar, err := normalizeWebhookIdentity(webhook.Username, webhook.AvatarURL); err == nil {
+			webhook.Username, webhook.AvatarURL = username, avatar
+		} else {
+			webhook.Username, webhook.AvatarURL = "", ""
+		}
+		if threadID, err := normalizeThreadID(webhook.ThreadID); err == nil {
+			webhook.ThreadID = threadID
+		} else {
+			webhook.ThreadID = ""
+		}
+		if buttons, err := normalizeButtons(webhook.Buttons); err == nil {
+			webhook.Buttons = buttons
+		} else {
+			webhook.Buttons = nil
+		}
+		webhook.UpdateSeconds = normalizeUpdateSeconds(webhook.UpdateSeconds)
+		webhook.Cleanup = normalizeCleanupSettings(webhook.Cleanup)
 	}
 
 	for i := range cfg.Channels {
@@ -302,6 +520,11 @@ func normalizeConfig(cfg *Config) {
 				continue
 			}
 			seen[destination.WebhookID] = true
+			if destination.Template != nil {
+				normalized := normalizeTemplate(*destination.Template)
+				destination.Template = &normalized
+			}
+			destination.LiveMessage = normalizeLiveMessage(destination.LiveMessage)
 			destinations = append(destinations, destination)
 		}
 		channel.Destinations = destinations
@@ -313,6 +536,7 @@ func saveConfig(path string, cfg Config) error {
 		return errors.New("settings path is empty")
 	}
 	normalizeConfig(&cfg)
+	cfg = protectConfigSecrets(cfg, filepath.Dir(path))
 
 	data, err := json.MarshalIndent(cfg, "", "  ")
 	if err != nil {
@@ -341,7 +565,15 @@ func cloneConfig(cfg Config) Config {
 	clone.Channels = make([]Channel, len(cfg.Channels))
 	for i, channel := range cfg.Channels {
 		clone.Channels[i] = channel
-		clone.Channels[i].Destinations = append([]Destination(nil), channel.Destinations...)
+		clone.Channels[i].Destinations = make([]Destination, len(channel.Destinations))
+		for j, destination := range channel.Destinations {
+			clone.Channels[i].Destinations[j] = destination
+			if destination.Template != nil {
+				template := cloneTemplate(*destination.Template)
+				clone.Channels[i].Destinations[j].Template = &template
+			}
+			clone.Channels[i].Destinations[j].LiveMessage = cloneLiveMessage(destination.LiveMessage)
+		}
 		clone.Channels[i].Filters.IncludeGames = append([]string(nil), channel.Filters.IncludeGames...)
 		clone.Channels[i].Filters.ExcludeGames = append([]string(nil), channel.Filters.ExcludeGames...)
 		clone.Channels[i].Filters.IncludeTitles = append([]string(nil), channel.Filters.IncludeTitles...)
@@ -352,7 +584,9 @@ func cloneConfig(cfg Config) Config {
 	for i, webhook := range cfg.Webhooks {
 		clone.Webhooks[i] = webhook
 		clone.Webhooks[i].RoleIDs = append([]string(nil), webhook.RoleIDs...)
+		clone.Webhooks[i].Buttons = append([]TemplateButton(nil), webhook.Buttons...)
 		clone.Webhooks[i].Template = cloneTemplate(webhook.Template)
+		clone.Webhooks[i].Cleanup = cloneCleanupSettings(webhook.Cleanup)
 	}
 	return clone
 }
@@ -367,6 +601,8 @@ func cloneTemplate(template Template) Template {
 		value := *template.PingRoles
 		clone.PingRoles = &value
 	}
+	clone.CustomFields = cloneTemplateFields(template.CustomFields)
+	clone.FieldOrder = cloneStringSlice(template.FieldOrder)
 	return clone
 }
 
@@ -459,6 +695,94 @@ func boolPointerValue(value *bool, fallback bool) bool {
 		return fallback
 	}
 	return *value
+}
+
+func normalizeWebhookIdentity(username, avatarURL string) (string, string, error) {
+	username = strings.TrimSpace(username)
+	if len([]rune(username)) > 80 {
+		return "", "", errors.New("webhook names must be 80 characters or fewer")
+	}
+	avatarURL = strings.TrimSpace(avatarURL)
+	if avatarURL == "" {
+		return username, "", nil
+	}
+	parsed, err := url.Parse(avatarURL)
+	if err != nil || parsed.Host == "" || parsed.User != nil || (parsed.Scheme != "https" && parsed.Scheme != "http") {
+		return "", "", errors.New("avatar URLs must be a normal http(s) URL")
+	}
+	if len(avatarURL) > 2048 {
+		return "", "", errors.New("avatar URLs must be 2,048 characters or fewer")
+	}
+	return username, avatarURL, nil
+}
+
+func normalizeButtons(input []TemplateButton) ([]TemplateButton, error) {
+	if len(input) == 0 {
+		return nil, nil
+	}
+	if len(input) > maxWebhookButtons {
+		return nil, fmt.Errorf("add at most %d link buttons per destination", maxWebhookButtons)
+	}
+	buttons := make([]TemplateButton, 0, len(input))
+	for _, raw := range input {
+		label := strings.TrimSpace(raw.Label)
+		buttonURL := strings.TrimSpace(raw.URL)
+		if label == "" && buttonURL == "" {
+			continue
+		}
+		if label == "" {
+			return nil, errors.New("every link button needs a label")
+		}
+		if utf8.RuneCountInString(label) > 80 {
+			return nil, errors.New("button labels must be 80 characters or fewer")
+		}
+		if buttonURL == "" {
+			return nil, errors.New("every link button needs a URL")
+		}
+		candidate := placeholderPattern.ReplaceAllString(buttonURL, "https://example.com/x")
+		parsed, err := url.Parse(candidate)
+		if err != nil || parsed.Host == "" || parsed.User != nil || (parsed.Scheme != "https" && parsed.Scheme != "http") {
+			return nil, errors.New("button URLs must be normal http(s) links")
+		}
+		buttons = append(buttons, TemplateButton{Label: label, URL: buttonURL})
+	}
+	if len(buttons) == 0 {
+		return nil, nil
+	}
+	return buttons, nil
+}
+
+func normalizeThreadID(input string) (string, error) {
+	value := strings.TrimSpace(input)
+	if value == "" {
+		return "", nil
+	}
+	if !discordIDPattern.MatchString(value) {
+		return "", errors.New("thread IDs are 17–20 digit numbers; paste the thread ID")
+	}
+	return value, nil
+}
+
+func validateCleanupSettings(cleanup CleanupSettings) (CleanupSettings, error) {
+	normalized := normalizeCleanupSettings(cleanup)
+	rawMode := strings.ToLower(strings.TrimSpace(cleanup.Mode))
+	if rawMode != cleanupOff && rawMode != "off" && rawMode != "none" &&
+		rawMode != cleanupDelete && rawMode != cleanupEdit && rawMode != cleanupPost {
+		if rawMode != "" {
+			return CleanupSettings{}, errors.New("cleanup must be off, delete, edit, or post")
+		}
+	}
+	if normalized.Mode == cleanupEdit || normalized.Mode == cleanupPost {
+		if normalized.Template == nil {
+			return CleanupSettings{}, errors.New("add ended-message text for this cleanup mode")
+		}
+		validated, err := validateTemplate(*normalized.Template)
+		if err != nil {
+			return CleanupSettings{}, fmt.Errorf("ended message: %w", err)
+		}
+		normalized.Template = normalizeEndedTemplate(validated)
+	}
+	return normalized, nil
 }
 
 func normalizeTwitchLogin(input string) (string, error) {

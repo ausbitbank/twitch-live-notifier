@@ -1,7 +1,7 @@
 # Competitive research: Twitch → Discord alerts
 
 **Research date:** 2026-11-15  
-**Product version reviewed:** 2.2.0  
+**Product version reviewed:** 2.3.0  
 **Scope:** Twitch live alerts for Discord communities, not general-purpose Discord bots.
 
 ## Method
@@ -39,7 +39,7 @@ for precise feature claims.
 | **Streamer.bot** | Local automation platform | Twitch, YouTube, Kick | Local-first, extremely flexible actions, Discord webhooks, OBS integration, C# scripting, donations and chat events. | Steep learning curve. Not a simple “add streamer + webhook” experience. |
 | **Siddhart/Twitch-Discord-Bot** | Self-hosted OSS bot | Twitch | Official Twitch API, unlimited streamers, role tagging, message updates every 10 minutes, cron-configurable. | Requires Discord bot token plus Twitch client ID/secret. Config-file setup, one Discord channel per deployment. |
 | **alepouna/twitch-discord-alerts** | Self-hosted OSS helper | Anything Streamer.bot supports | Small Node helper that triggers from Streamer.bot. | Manual Streamer.bot/Node setup, one streamer, not a standalone product. |
-| **Twitch Live to Discord** | Local webhook app + Docker | Twitch | No bot/OAuth/API registration, multi-streamer + multi-destination routing, per-destination templates and live preview, streamer + role pings, persisted dedupe, game/title/viewer filters, quiet hours/cooldowns, Docker/self-host, cross-platform dashboard, MIT. | Polling-based, local app or self-hosted container must stay running, no live roles/schedule sync/stream-end cleanup, no official Twitch API mode yet, no macOS/Linux tray. |
+| **Twitch Live to Discord** | Local webhook app + Docker | Twitch | No bot/OAuth/API registration, multi-streamer + multi-destination routing, per-destination and per-route templates with live preview, streamer + role pings, persisted dedupe, stream-end cleanup, live message edits, custom identity/thread/buttons, game/title/viewer filters, quiet hours/cooldowns, encrypted secrets, Docker/self-host, cross-platform dashboard, MIT. | Polling-based, local app or self-hosted container must stay running, no live roles/schedule sync, no official Twitch API mode yet, no macOS/Linux tray. |
 
 ## Feature comparison
 
@@ -59,8 +59,8 @@ generic bot; **No** = not a core feature.
 | Role pings | Yes | Yes | Partial | Yes | **Yes** |
 | Game/title filters | Yes | Templates | Zapier filters | Yes via actions | **Yes** |
 | Quiet hours/cooldowns | Cooldowns | Templates | Limited | Yes via actions | **Yes** |
-| Stream-end cleanup | Yes | No | No | Yes via actions | No |
-| Message updates while live | Partial | No | No | Yes via actions | No |
+| Stream-end cleanup | Yes | No | No | Yes via actions | **Yes** |
+| Message updates while live | Partial | No | No | Yes via actions | **Yes** |
 | Live roles | Yes | Partial | No | Yes via actions | No |
 | Schedule sync | Yes (Pro) | No | No | Yes via actions | No |
 | Twitch Teams | Yes | No | No | No | No |
@@ -84,6 +84,14 @@ generic bot; **No** = not a core feature.
 - **Cross-platform dashboard.** Windows, Linux, and macOS use the same UI.
 - **Dedupe that survives restarts.** The last stream ID is stored per
   destination, so manual checks and restarts do not repost the same stream.
+- **Stream lifecycle without a bot.** Webhook message IDs are retained per route
+  so live posts can be edited, deleted, or replaced with an ended message,
+  including a VOD link.
+- **Identity and template power.** Per-destination names/avatars, thread targets,
+  link buttons, route-level template overrides, conditional fallbacks, custom
+  fields, and field ordering.
+- **Encrypted secrets.** Webhook URLs are encrypted at rest with the platform
+  keychain/DPAPI where available, and backups redact them by default.
 - **Optional streamer and role pings with narrow allowed mentions.**
   `{discord_mention}` and `{role_mentions}` allow only configured IDs;
   `@everyone` and unconfigured roles remain blocked.
@@ -159,6 +167,9 @@ competitor features possible without a bot:
 - Thread/forum target support.
 - Custom webhook username/avatar per destination.
 
+**Delivered in 2.3.0:** all of the above, plus per-route templates, link
+buttons, redacted backups, and encrypted webhook URLs.
+
 ### 6. Packaging and trust
 
 A public utility needs lower-friction installation and updates:
@@ -167,8 +178,9 @@ A public utility needs lower-friction installation and updates:
 - macOS `.app`/menu-bar wrapper and notarization.
 - Linux AppImage/deb and a native tray.
 - Auto-update from GitHub releases.
-- Encrypt webhook URLs with DPAPI/Keychain/libsecret.
-- Optional local dashboard PIN/token for local-network access.
+- ~~Encrypt webhook URLs with DPAPI/Keychain/libsecret.~~ Delivered in 2.3.0.
+- ~~Optional local dashboard PIN/token for local-network access.~~ Delivered in
+  2.3.0.
 
 ### 7. Platform reach
 
@@ -216,11 +228,10 @@ simplicity, message control, multi-destination routing, privacy, and reliability
 
 The most valuable next steps are:
 
-1. Stream-end cleanup and live message updates.
-2. Installer/signing/auto-update.
-3. Official Twitch API/Helix mode.
-4. Secret storage and config export UX.
-5. YouTube/Kick and Twitch Teams.
+1. Installer/signing/auto-update.
+2. Official Twitch API/Helix mode.
+3. YouTube/Kick and Twitch Teams.
+4. Optional bot mode for live roles and schedule sync.
 
 See [roadmap.md](roadmap.md) for the proposed releases and acceptance criteria.
 

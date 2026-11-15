@@ -1,6 +1,6 @@
 # Roadmap
 
-**Current baseline:** 2.2.0  
+**Current baseline:** 2.3.0  
 **Research input:** [competitive-research.md](competitive-research.md)
 
 ## Product principles
@@ -183,6 +183,9 @@ Goal: match the most visible notification features competitors offer.
 
 ### P1: Stream-end cleanup
 
+**Shipped in 2.3.0.** Stored message IDs, per-route cleanup policy, ended
+messages, VOD links, and failure isolation are live.
+
 Deliverables:
 
 - Store Discord message ID per channel/destination.
@@ -200,6 +203,9 @@ Acceptance criteria:
 
 ### P1: Live message updates
 
+**Shipped in 2.3.0.** Configurable edits with a 60-second minimum, interval
+persistence, and offline stop behavior are live.
+
 Deliverables:
 
 - Optional periodic edit of the live message while the stream is live.
@@ -215,11 +221,17 @@ Acceptance criteria:
 
 ### P1: Custom identity and thread targets
 
+**Shipped in 2.3.0.** Per-destination name/avatar overrides, `thread_id` posting,
+and up to five link buttons are live.
+
 - Per-destination webhook username and avatar override.
 - Post to a Discord thread/forum via `thread_id`.
 - Optional link buttons/components where Discord supports them.
 
 ### P1: Per-route templates and template power
+
+**Shipped in 2.3.0.** Route overrides, fallback syntax, custom/reorderable
+fields, import/export, and duplicate-destination UX are live.
 
 - Template override per streamer→destination route.
 - Conditional/default syntax, e.g. `{game|Just Chatting}`.
@@ -227,6 +239,9 @@ Acceptance criteria:
 - Template import/export and “duplicate destination.”
 
 ### P1: Secret storage and config UX
+
+**Shipped in 2.3.0.** DPAPI/Keychain/libsecret-backed encryption, redacted
+backups, restore-from-UI, and an optional dashboard token are live.
 
 - Encrypt webhook URLs using DPAPI (Windows), Keychain (macOS), and libsecret
   (Linux) where available.
@@ -305,10 +320,12 @@ This must be a separate opt-in mode with OAuth and clear permission scopes.
 - Add `context.Context` cancellation to remaining network calls and shutdown.
 - ~~Add Discord webhook health state and “disable after repeated failure” UI.~~
   Done in 2.2.0.
-- Add integration tests for multi-destination, retries, filters, cleanup, and
-  role mentions. Multi-destination, retries, filters, and role mentions are
-  covered.
-- Expand Playwright UI tests for onboarding, settings, and failure states.
+- ~~Add integration tests for multi-destination, retries, filters, cleanup, and
+  role mentions.~~ Multi-destination, retries, filters, lifecycle/cleanup, and
+  role mentions are covered.
+- Expand committed Playwright UI tests for onboarding, settings, and failure
+  states. A dashboard smoke pass now covers editors, lifecycle controls, route
+  templates, and settings.
 - Keep `go vet` for Windows/Linux/macOS and race tests in CI.
 - Evaluate code signing and reproducible builds before a wider launch.
 

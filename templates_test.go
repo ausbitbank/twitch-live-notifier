@@ -35,10 +35,108 @@ func TestRenderTemplate(t *testing.T) {
 	}
 }
 
+func TestRenderTemplateFallbackSyntax(t *testing.T) {
+	info := testStreamInfo()
+	info.Game = ""
+	info.Title = ""
+	now := time.Now()
+	got := renderTemplate("{game|Just Chatting} / {title|Untitled stream} / {streamer|Someone}", info, "Community", now)
+	if got != "Just Chatting / Untitled stream / TestStreamer" {
+		t.Fatalf("renderTemplate fallback = %q", got)
+	}
+
+	info.Game = "Music"
+	got = renderTemplate("{game|Just Chatting}", info, "Community", now)
+	if got != "Music" {
+		t.Fatalf("renderTemplate non-empty fallback = %q", got)
+	}
+}
+
 func TestUnknownPlaceholders(t *testing.T) {
+	gotFallback := unknownPlaceholders("{game|Just Chatting} {mystery|fallback}")
+	if len(gotFallback) != 1 || gotFallback[0] != "{mystery|fallback}" {
+		t.Fatalf("fallback unknown placeholders = %#v", gotFallback)
+	}
+
 	got := unknownPlaceholders("{streamer} {unknown} {title} {another_one} {unknown}")
 	if len(got) != 2 || got[0] != "{unknown}" || got[1] != "{another_one}" {
 		t.Fatalf("unknownPlaceholders() = %#v", got)
+	}
+}
+
+func TestRouteTemplateOverrideKeepsDestinationMentionScope(t *testing.T) {
+	info := testStreamInfo()
+	info.DiscordID = "123456789012345678"
+	base := defaultTemplate()
+	base.Content = "Destination {streamer}"
+	route := defaultTemplate()
+	route.Content = "Route {streamer} {game|Just Chatting}"
+	route.PingStreamer = nil
+	webhook := Webhook{Label: "Community", Template: base, RoleIDs: []string{"987654321098765432"}}
+	destination := Destination{WebhookID: "w1", Template: &route}
+
+	payload := buildPayloadForDestination(webhook, &destination, info, time.Now(), false)
+	if payload.Content != "Route TestStreamer Just Chatting" {
+		t.Fatalf("route content = %q", payload.Content)
+	}
+	// The route template cannot disable the destination's scoped streamer ping.
+	if payload.AllowedMentions == nil || len(payload.AllowedMentions.Users) != 1 || payload.AllowedMentions.Users[0] != info.DiscordID {
+		t.Fatalf("allowed mentions = %+v", payload.AllowedMentions)
+	}
+	if len(payload.AllowedMentions.Roles) != 1 || payload.AllowedMentions.Roles[0] != "987654321098765432" {
+		t.Fatalf("allowed roles = %+v", payload.AllowedMentions)
+	}
+}
+
+func TestCustomFieldsAndFieldOrder(t *testing.T) {
+	info := testStreamInfo()
+	template := defaultTemplate()
+	template.CustomFields = []TemplateField{
+		{Name: "Schedule", Value: "Every Saturday", Inline: true},
+		{Name: "Socials", Value: "{url}", Inline: false},
+	}
+	template.FieldOrder = []string{"custom:0", "game", "custom:1"}
+	webhook := Webhook{Label: "Community", Template: template}
+	payload := buildPayload(webhook, info, time.Now(), false)
+	if len(payload.Embeds) != 1 {
+		t.Fatalf("embeds = %d", len(payload.Embeds))
+	}
+	fields := payload.Embeds[0].Fields
+	if len(fields) != 5 {
+		t.Fatalf("fields = %+v", fields)
+	}
+	if fields[0].Name != "Schedule" || fields[1].Name != "Game" || fields[2].Name != "Socials" {
+		t.Fatalf("field order = %+v", fields)
+	}
+	if fields[1].Value != "Just Chatting" {
+		t.Fatalf("game field = %+v", fields[1])
+	}
+}
+
+func TestNormalizeButtons(t *testing.T) {
+	buttons, err := normalizeButtons([]TemplateButton{
+		{Label: "Watch", URL: "https://www.twitch.tv/{channel}"},
+		{Label: "Channel", URL: "{url}"},
+		{Label: "", URL: ""},
+	})
+	if err != nil {
+		t.Fatalf("normalizeButtons returned error: %v", err)
+	}
+	if len(buttons) != 2 || buttons[0].Label != "Watch" || buttons[1].URL != "{url}" {
+		t.Fatalf("buttons = %+v", buttons)
+	}
+	if _, err := normalizeButtons([]TemplateButton{{Label: "Bad", URL: "javascript:alert(1)"}}); err == nil {
+		t.Fatal("javascript button URL accepted")
+	}
+	if _, err := normalizeButtons([]TemplateButton{{Label: "No URL"}}); err == nil {
+		t.Fatal("button without URL accepted")
+	}
+	tooMany := make([]TemplateButton, maxWebhookButtons+1)
+	for i := range tooMany {
+		tooMany[i] = TemplateButton{Label: "One", URL: "https://example.com"}
+	}
+	if _, err := normalizeButtons(tooMany); err == nil {
+		t.Fatal("too many buttons accepted")
 	}
 }
 

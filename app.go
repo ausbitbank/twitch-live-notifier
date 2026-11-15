@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -46,6 +47,8 @@ type State struct {
 	StartAtLoginSupported bool                     `json:"start_at_login_supported"`
 	Placeholders          []Placeholder            `json:"placeholders"`
 	DefaultTemplate       Template                 `json:"default_template"`
+	DefaultEndedTemplate  Template                 `json:"default_ended_template"`
+	DashboardTokenSet     bool                     `json:"dashboard_token_set"`
 }
 
 type CheckSummary struct {
@@ -287,11 +290,17 @@ func (a *App) checkChannel(ctx context.Context, channel Channel, webhooks []Webh
 	}
 
 	if !status.Live {
+		a.cleanupLiveMessages(ctx, channel, webhooks, streamInfoFromTwitch(user, false), now, "")
 		return 0, nil
 	}
 
 	info := streamInfoFromTwitch(user, true)
 	info.DiscordID = channel.DiscordID
+
+	// A message from an earlier stream may still be present if the app was
+	// offline when that stream ended. Clean it up best-effort before posting
+	// the new one; a cleanup failure must never block the new alert.
+	a.cleanupLiveMessages(ctx, channel, webhooks, info, now, info.StreamID)
 
 	if allowed, reason := evaluateFilters(channel, info, now, time.Local); !allowed {
 		a.recordFilterSkip(channel.ID, info.StreamID, reason)
@@ -306,10 +315,12 @@ func (a *App) checkChannel(ctx context.Context, channel Channel, webhooks []Webh
 			continue
 		}
 		if destination.LastStreamID != "" && destination.LastStreamID == info.StreamID {
+			a.markLiveSnapshot(channel.ID, webhook.ID, info)
+			a.maybeUpdateLiveMessage(ctx, channel.ID, destination, *webhook, info, now)
 			continue
 		}
 
-		result, postErr := postDiscordContext(ctx, webhook.URL, buildPayload(*webhook, info, now, false))
+		result, postErr := postDiscordContextWithOptions(ctx, webhook.URL, buildPayloadForDestination(*webhook, &destination, info, now, false), discordWebhookOptions{ThreadID: webhook.ThreadID})
 		if postErr != nil {
 			a.recordWebhookFailure(webhook.ID, postErr)
 			postErrors = append(postErrors, fmt.Sprintf("%s: %v", webhook.Label, postErr))
@@ -317,7 +328,7 @@ func (a *App) checkChannel(ctx context.Context, channel Channel, webhooks []Webh
 			continue
 		}
 		a.recordWebhookSuccess(webhook.ID)
-		a.markPosted(channel.ID, webhook.ID, info.StreamID, result.MessageID, now)
+		a.markPosted(channel.ID, webhook.ID, info, result.MessageID, webhook.URL, webhook.ThreadID, now)
 		posted++
 		a.addActivity("success", fmt.Sprintf("Posted %q to %s.", info.Title, webhook.Label))
 	}
@@ -333,23 +344,300 @@ func (a *App) checkChannel(ctx context.Context, channel Channel, webhooks []Webh
 	return posted, nil
 }
 
-func (a *App) markPosted(channelID, webhookID, streamID, messageID string, now time.Time) {
+// cleanupLiveMessages applies each destination's stream-end policy. When
+// keepStreamID is set, records for that stream are left alone (the stream is
+// still live). Records for older streams are always cleared after the attempt
+// so a failed cleanup cannot hold up the next stream.
+func (a *App) cleanupLiveMessages(ctx context.Context, channel Channel, webhooks []Webhook, fallback StreamInfo, now time.Time, keepStreamID string) {
+	replacing := keepStreamID != ""
+	for _, destination := range channel.Destinations {
+		record := destination.LiveMessage
+		if record == nil || record.MessageID == "" {
+			continue
+		}
+		if keepStreamID != "" && record.StreamID == keepStreamID {
+			continue
+		}
+		webhook := findWebhook(webhooks, destination.WebhookID)
+		if webhook == nil {
+			a.clearLiveMessage(channel.ID, destination.WebhookID)
+			continue
+		}
+		if !webhook.Enabled {
+			continue
+		}
+		mode := normalizeCleanupSettings(webhook.Cleanup).Mode
+		if mode == cleanupOff && !replacing {
+			// Cleanup is off; leave the original message untouched and forget
+			// it so it is not retried forever.
+			a.clearLiveMessage(channel.ID, destination.WebhookID)
+			continue
+		}
+		clear, err := a.applyCleanup(ctx, *webhook, destination, fallback, now)
+		if err != nil {
+			a.recordWebhookFailure(webhook.ID, err)
+			a.addActivity("error", fmt.Sprintf("Could not %s the live message in %s: %v", cleanupVerb(mode), webhook.Label, err))
+		} else if mode != cleanupOff {
+			message := "Cleaned up the live message in " + webhook.Label + "."
+			switch mode {
+			case cleanupDelete:
+				message = "Deleted the live message in " + webhook.Label + "."
+			case cleanupEdit:
+				message = "Updated the live message in " + webhook.Label + "."
+			case cleanupPost:
+				message = "Posted the ended message in " + webhook.Label + "."
+			}
+			a.addActivity("info", message)
+		}
+		if clear || replacing {
+			a.clearLiveMessage(channel.ID, destination.WebhookID)
+		}
+	}
+}
+
+func cleanupVerb(mode string) string {
+	switch mode {
+	case cleanupDelete:
+		return "delete"
+	case cleanupEdit:
+		return "update"
+	case cleanupPost:
+		return "post the ended message for"
+	default:
+		return "clean up"
+	}
+}
+
+// applyCleanup returns whether the stored record can be forgotten. Transient
+// failures keep it for the next check; permanent credential/target failures
+// drop it so the app does not hammer Discord.
+func (a *App) applyCleanup(ctx context.Context, webhook Webhook, destination Destination, fallback StreamInfo, now time.Time) (bool, error) {
+	record := destination.LiveMessage
+	if record == nil || record.MessageID == "" {
+		return true, nil
+	}
+	cleanup := normalizeCleanupSettings(webhook.Cleanup)
+	targetURL := firstNonEmpty(record.WebhookURL, webhook.URL)
+	if targetURL == "" {
+		return true, errors.New("the original webhook URL is no longer available")
+	}
+	// An empty stored thread ID means the original post was in the main
+	// channel. Do not fall back to the current destination thread setting,
+	// which may have changed after the post was created.
+	threadID := record.ThreadID
+	info := cleanupInfo(record, fallback)
+
+	switch cleanup.Mode {
+	case cleanupDelete:
+		if err := deleteDiscordContext(ctx, targetURL, record.MessageID, threadID); err != nil {
+			return cleanupClearOnError(err), err
+		}
+		return true, nil
+	case cleanupEdit:
+		template := routeTemplateFor(webhook, &destination)
+		if cleanup.Template != nil {
+			template = *cleanup.Template
+		}
+		payload := buildPayloadWithTemplate(webhook, template, info, now, false)
+		payload.Username = ""
+		payload.AvatarURL = ""
+		if _, err := editDiscordContext(ctx, targetURL, record.MessageID, payload, threadID); err != nil {
+			return cleanupClearOnError(err), err
+		}
+		return true, nil
+	case cleanupPost:
+		template := routeTemplateFor(webhook, &destination)
+		if cleanup.Template != nil {
+			template = *cleanup.Template
+		}
+		payload := buildPayloadWithTemplate(webhook, template, info, now, false)
+		if _, err := postDiscordContextWithOptions(ctx, targetURL, payload, discordWebhookOptions{ThreadID: threadID}); err != nil {
+			return cleanupClearOnError(err), err
+		}
+		return true, nil
+	default:
+		return true, nil
+	}
+}
+
+func cleanupClearOnError(err error) bool {
+	var httpErr *discordHTTPError
+	if errors.As(err, &httpErr) {
+		return httpErr.StatusCode >= 400 && httpErr.StatusCode < 500 && httpErr.StatusCode != http.StatusTooManyRequests
+	}
+	return false
+}
+
+func cleanupInfo(record *LiveMessage, fallback StreamInfo) StreamInfo {
+	info := fallback
+	info.Live = false
+	if record == nil {
+		return info
+	}
+	if record.StreamID != "" {
+		info.StreamID = record.StreamID
+	}
+	if record.Title != "" {
+		info.Title = record.Title
+	}
+	if record.Game != "" {
+		info.Game = record.Game
+	}
+	if record.StartedAt != "" {
+		info.StartedAt = parseTime(record.StartedAt)
+	}
+	if record.VODURL != "" {
+		info.VODURL = record.VODURL
+	}
+	return info
+}
+
+func (a *App) maybeUpdateLiveMessage(ctx context.Context, channelID string, destination Destination, webhook Webhook, info StreamInfo, now time.Time) {
+	if webhook.UpdateSeconds <= 0 {
+		return
+	}
+	record := destination.LiveMessage
+	if record == nil || record.MessageID == "" || record.StreamID != info.StreamID {
+		return
+	}
+	interval := time.Duration(normalizeUpdateSeconds(webhook.UpdateSeconds)) * time.Second
+	if last := parseTime(record.LastEditedAt); !last.IsZero() && now.Sub(last) < interval {
+		return
+	}
+	targetURL := firstNonEmpty(record.WebhookURL, webhook.URL)
+	if targetURL == "" {
+		return
+	}
+	threadID := record.ThreadID
+	payload := buildPayloadForDestination(webhook, &destination, info, now, false)
+	payload.Username = ""
+	payload.AvatarURL = ""
+	if _, err := editDiscordContext(ctx, targetURL, record.MessageID, payload, threadID); err != nil {
+		a.recordWebhookFailure(webhook.ID, err)
+		if cleanupClearOnError(err) {
+			a.clearLiveMessage(channelID, webhook.ID)
+		}
+		a.addActivity("error", fmt.Sprintf("Could not update the live message in %s: %v", webhook.Label, err))
+		return
+	}
+	a.recordWebhookSuccess(webhook.ID)
+	a.markDestinationEdited(channelID, webhook.ID, now)
+	a.addActivity("info", fmt.Sprintf("Updated the live message in %s.", webhook.Label))
+}
+
+func (a *App) markPosted(channelID, webhookID string, info StreamInfo, messageID, messageURL, threadID string, now time.Time) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if index := a.channelIndexLocked(channelID); index >= 0 {
 		for i := range a.cfg.Channels[index].Destinations {
 			destination := &a.cfg.Channels[index].Destinations[i]
 			if destination.WebhookID == webhookID {
-				destination.LastStreamID = streamID
-				destination.LastPostedAt = now.UTC().Format(time.RFC3339)
+				timestamp := now.UTC().Format(time.RFC3339)
+				destination.LastStreamID = info.StreamID
+				destination.LastPostedAt = timestamp
+				if messageID != "" {
+					destination.LiveMessage = &LiveMessage{
+						MessageID:    messageID,
+						WebhookURL:   messageURL,
+						ThreadID:     threadID,
+						StreamID:     info.StreamID,
+						Title:        info.Title,
+						Game:         info.Game,
+						VODURL:       info.VODURL,
+						StartedAt:    formatOptionalTime(info.StartedAt),
+						PostedAt:     timestamp,
+						LastEditedAt: timestamp,
+					}
+				}
 				break
 			}
 		}
 		a.cfg.Channels[index].LastAlertAt = now.UTC().Format(time.RFC3339)
 		a.cfg.Channels[index].LastAlertDate = now.Local().Format("2006-01-02")
-		a.cfg.Channels[index].LastAlertStreamID = streamID
+		a.cfg.Channels[index].LastAlertStreamID = info.StreamID
 	}
-	a.persistLocked()
+	_ = a.persistLocked()
+}
+
+func formatOptionalTime(value time.Time) string {
+	if value.IsZero() {
+		return ""
+	}
+	return value.UTC().Format(time.RFC3339)
+}
+
+func (a *App) markLiveSnapshot(channelID, webhookID string, info StreamInfo) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	index := a.channelIndexLocked(channelID)
+	if index < 0 {
+		return
+	}
+	for i := range a.cfg.Channels[index].Destinations {
+		destination := &a.cfg.Channels[index].Destinations[i]
+		if destination.WebhookID != webhookID || destination.LiveMessage == nil {
+			continue
+		}
+		record := destination.LiveMessage
+		if record.StreamID != info.StreamID {
+			return
+		}
+		changed := false
+		if info.Title != "" && record.Title != info.Title {
+			record.Title = info.Title
+			changed = true
+		}
+		if info.Game != "" && record.Game != info.Game {
+			record.Game = info.Game
+			changed = true
+		}
+		if info.VODURL != "" && record.VODURL != info.VODURL {
+			record.VODURL = info.VODURL
+			changed = true
+		}
+		if started := formatOptionalTime(info.StartedAt); started != "" && record.StartedAt != started {
+			record.StartedAt = started
+			changed = true
+		}
+		if changed {
+			_ = a.persistLocked()
+		}
+		return
+	}
+}
+
+func (a *App) markDestinationEdited(channelID, webhookID string, now time.Time) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	index := a.channelIndexLocked(channelID)
+	if index < 0 {
+		return
+	}
+	for i := range a.cfg.Channels[index].Destinations {
+		destination := &a.cfg.Channels[index].Destinations[i]
+		if destination.WebhookID == webhookID && destination.LiveMessage != nil {
+			destination.LiveMessage.LastEditedAt = now.UTC().Format(time.RFC3339)
+			_ = a.persistLocked()
+			return
+		}
+	}
+}
+
+func (a *App) clearLiveMessage(channelID, webhookID string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	index := a.channelIndexLocked(channelID)
+	if index < 0 {
+		return
+	}
+	for i := range a.cfg.Channels[index].Destinations {
+		destination := &a.cfg.Channels[index].Destinations[i]
+		if destination.WebhookID == webhookID && destination.LiveMessage != nil {
+			destination.LiveMessage = nil
+			_ = a.persistLocked()
+			return
+		}
+	}
 }
 
 func (a *App) webhookAvailable(id string) bool {
@@ -494,6 +782,8 @@ func (a *App) State() State {
 	if !lastCheck.IsZero() {
 		lastCheckText = lastCheck.UTC().Format(time.RFC3339)
 	}
+	dashboardTokenSet := cfg.Settings.DashboardTokenHash != ""
+	cfg.Settings.DashboardTokenHash = ""
 	return State{
 		Version:               Version,
 		Config:                cfg,
@@ -506,6 +796,8 @@ func (a *App) State() State {
 		StartAtLoginSupported: startAtLoginSupported(),
 		Placeholders:          templatePlaceholders,
 		DefaultTemplate:       defaultTemplate(),
+		DefaultEndedTemplate:  defaultEndedTemplate(),
+		DashboardTokenSet:     dashboardTokenSet,
 	}
 }
 
@@ -671,47 +963,93 @@ func (a *App) SetDestinations(channelID string, webhookIDs []string) error {
 	return nil
 }
 
-func (a *App) AddWebhook(label, rawURL string, roleIDs []string, template *Template) (Webhook, error) {
-	label = strings.TrimSpace(label)
-	if label == "" {
-		return Webhook{}, errors.New("give this destination a label")
-	}
-	if len(label) > 60 {
-		return Webhook{}, errors.New("destination labels must be 60 characters or fewer")
-	}
-	webhookURL, err := normalizeWebhookURL(rawURL)
-	if err != nil {
-		return Webhook{}, err
-	}
-	normalizedRoles, err := normalizeRoleIDs(roleIDs)
-	if err != nil {
-		return Webhook{}, err
-	}
-	chosen := defaultTemplate()
+func (a *App) SetRouteTemplate(channelID, webhookID string, template *Template) error {
+	var validated *Template
 	if template != nil {
-		chosen, err = validateTemplate(*template)
+		value, err := validateTemplate(*template)
 		if err != nil {
-			return Webhook{}, err
+			return err
 		}
+		validated = &value
+	}
+
+	a.mu.Lock()
+	channelIndex := a.channelIndexLocked(channelID)
+	if channelIndex < 0 {
+		a.mu.Unlock()
+		return errors.New("streamer not found")
+	}
+	webhookIndex := a.webhookIndexLocked(webhookID)
+	if webhookIndex < 0 {
+		a.mu.Unlock()
+		return errors.New("destination not found")
+	}
+	found := false
+	for i := range a.cfg.Channels[channelIndex].Destinations {
+		destination := &a.cfg.Channels[channelIndex].Destinations[i]
+		if destination.WebhookID != webhookID {
+			continue
+		}
+		destination.Template = validated
+		found = true
+		break
+	}
+	if !found {
+		a.mu.Unlock()
+		return errors.New("this streamer is not connected to that destination")
+	}
+	channelName := a.cfg.Channels[channelIndex].DisplayName
+	webhookLabel := a.cfg.Webhooks[webhookIndex].Label
+	err := a.persistLocked()
+	a.mu.Unlock()
+	if err != nil {
+		return err
+	}
+	if validated == nil {
+		a.addActivity("info", fmt.Sprintf("Using the %s template for %s.", webhookLabel, channelName))
+	} else {
+		a.addActivity("info", fmt.Sprintf("Saved a custom template for %s → %s.", channelName, webhookLabel))
+	}
+	return nil
+}
+
+func (a *App) AddWebhook(label, rawURL string, roleIDs []string, template *Template) (Webhook, error) {
+	input := WebhookInput{Label: label, URL: rawURL, RoleIDs: roleIDs, Enabled: true}
+	if template != nil {
+		input.Template = *template
+	}
+	return a.AddWebhookInput(input)
+}
+
+func (a *App) AddWebhookInput(input WebhookInput) (Webhook, error) {
+	validated, err := validateWebhookInput(input)
+	if err != nil {
+		return Webhook{}, err
 	}
 
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	for _, webhook := range a.cfg.Webhooks {
-		if strings.EqualFold(webhook.Label, label) {
-			return Webhook{}, fmt.Errorf("a destination called %q already exists", label)
+		if strings.EqualFold(webhook.Label, validated.Label) {
+			return Webhook{}, fmt.Errorf("a destination called %q already exists", validated.Label)
 		}
-		if webhook.URL == webhookURL {
+		if webhook.URL == validated.URL {
 			return Webhook{}, errors.New("that Discord webhook is already added")
 		}
 	}
 	webhook := Webhook{
-		ID:       newID(),
-		Label:    label,
-		URL:      webhookURL,
-		Enabled:  true,
-		RoleIDs:  normalizedRoles,
-		Template: chosen,
+		ID:            newID(),
+		Label:         validated.Label,
+		URL:           validated.URL,
+		Enabled:       true,
+		RoleIDs:       validated.RoleIDs,
+		Template:      validated.Template,
+		Username:      validated.Username,
+		AvatarURL:     validated.AvatarURL,
+		ThreadID:      validated.ThreadID,
+		Buttons:       validated.Buttons,
+		UpdateSeconds: validated.UpdateSeconds,
+		Cleanup:       validated.Cleanup,
 	}
 	firstWebhook := len(a.cfg.Webhooks) == 0
 	a.cfg.Webhooks = append(a.cfg.Webhooks, webhook)
@@ -725,27 +1063,22 @@ func (a *App) AddWebhook(label, rawURL string, roleIDs []string, template *Templ
 	if err := a.persistLocked(); err != nil {
 		return Webhook{}, err
 	}
-	a.activity = append(a.activity, Activity{ID: newID(), Time: time.Now(), Level: "success", Message: "Added destination " + label + "."})
+	a.activity = append(a.activity, Activity{ID: newID(), Time: time.Now(), Level: "success", Message: "Added destination " + validated.Label + "."})
 	return webhook, nil
 }
 
 func (a *App) UpdateWebhook(id, label, rawURL string, roleIDs []string, enabled bool, template Template) (Webhook, error) {
-	label = strings.TrimSpace(label)
-	if label == "" {
-		return Webhook{}, errors.New("give this destination a label")
-	}
-	if len(label) > 60 {
-		return Webhook{}, errors.New("destination labels must be 60 characters or fewer")
-	}
-	webhookURL, err := normalizeWebhookURL(rawURL)
-	if err != nil {
-		return Webhook{}, err
-	}
-	normalizedRoles, err := normalizeRoleIDs(roleIDs)
-	if err != nil {
-		return Webhook{}, err
-	}
-	template, err = validateTemplate(template)
+	return a.UpdateWebhookInput(id, WebhookInput{
+		Label:    label,
+		URL:      rawURL,
+		RoleIDs:  roleIDs,
+		Enabled:  enabled,
+		Template: template,
+	})
+}
+
+func (a *App) UpdateWebhookInput(id string, input WebhookInput) (Webhook, error) {
+	validated, err := validateWebhookInput(input)
 	if err != nil {
 		return Webhook{}, err
 	}
@@ -760,24 +1093,30 @@ func (a *App) UpdateWebhook(id, label, rawURL string, roleIDs []string, enabled 
 		if i == index {
 			continue
 		}
-		if strings.EqualFold(webhook.Label, label) {
+		if strings.EqualFold(webhook.Label, validated.Label) {
 			a.mu.Unlock()
-			return Webhook{}, fmt.Errorf("a destination called %q already exists", label)
+			return Webhook{}, fmt.Errorf("a destination called %q already exists", validated.Label)
 		}
-		if webhook.URL == webhookURL {
+		if webhook.URL == validated.URL {
 			a.mu.Unlock()
 			return Webhook{}, errors.New("that Discord webhook is already added")
 		}
 	}
 
 	wasEnabled := a.cfg.Webhooks[index].Enabled
-	urlChanged := a.cfg.Webhooks[index].URL != webhookURL
-	a.cfg.Webhooks[index].Label = label
-	a.cfg.Webhooks[index].URL = webhookURL
-	a.cfg.Webhooks[index].Enabled = enabled
-	a.cfg.Webhooks[index].RoleIDs = normalizedRoles
-	a.cfg.Webhooks[index].Template = template
-	if urlChanged || (enabled && !wasEnabled) {
+	urlChanged := a.cfg.Webhooks[index].URL != validated.URL
+	a.cfg.Webhooks[index].Label = validated.Label
+	a.cfg.Webhooks[index].URL = validated.URL
+	a.cfg.Webhooks[index].Enabled = validated.Enabled
+	a.cfg.Webhooks[index].RoleIDs = validated.RoleIDs
+	a.cfg.Webhooks[index].Template = validated.Template
+	a.cfg.Webhooks[index].Username = validated.Username
+	a.cfg.Webhooks[index].AvatarURL = validated.AvatarURL
+	a.cfg.Webhooks[index].ThreadID = validated.ThreadID
+	a.cfg.Webhooks[index].Buttons = validated.Buttons
+	a.cfg.Webhooks[index].UpdateSeconds = validated.UpdateSeconds
+	a.cfg.Webhooks[index].Cleanup = validated.Cleanup
+	if urlChanged || (validated.Enabled && !wasEnabled) {
 		a.cfg.Webhooks[index].Invalid = false
 		a.cfg.Webhooks[index].LastError = ""
 		a.cfg.Webhooks[index].LastErrorAt = ""
@@ -789,6 +1128,7 @@ func (a *App) UpdateWebhook(id, label, rawURL string, roleIDs []string, enabled 
 				if a.cfg.Channels[channelIndex].Destinations[destinationIndex].WebhookID == id {
 					a.cfg.Channels[channelIndex].Destinations[destinationIndex].LastStreamID = ""
 					a.cfg.Channels[channelIndex].Destinations[destinationIndex].LastPostedAt = ""
+					a.cfg.Channels[channelIndex].Destinations[destinationIndex].LiveMessage = nil
 				}
 			}
 		}
@@ -799,11 +1139,62 @@ func (a *App) UpdateWebhook(id, label, rawURL string, roleIDs []string, enabled 
 	}
 	webhook := a.cfg.Webhooks[index]
 	a.mu.Unlock()
-	a.addActivity("info", "Updated destination "+label+".")
-	if enabled && (!wasEnabled || urlChanged) && a.enableAutoCheck {
+	a.addActivity("info", "Updated destination "+validated.Label+".")
+	if validated.Enabled && (!wasEnabled || urlChanged) && a.enableAutoCheck {
 		a.TriggerCheck()
 	}
 	return webhook, nil
+}
+
+func validateWebhookInput(input WebhookInput) (WebhookInput, error) {
+	input.Label = strings.TrimSpace(input.Label)
+	if input.Label == "" {
+		return WebhookInput{}, errors.New("give this destination a label")
+	}
+	if len(input.Label) > 60 {
+		return WebhookInput{}, errors.New("destination labels must be 60 characters or fewer")
+	}
+	webhookURL, err := normalizeWebhookURL(input.URL)
+	if err != nil {
+		return WebhookInput{}, err
+	}
+	roles, err := normalizeRoleIDs(input.RoleIDs)
+	if err != nil {
+		return WebhookInput{}, err
+	}
+	template, err := validateTemplate(input.Template)
+	if err != nil {
+		return WebhookInput{}, err
+	}
+	username, avatar, err := normalizeWebhookIdentity(input.Username, input.AvatarURL)
+	if err != nil {
+		return WebhookInput{}, err
+	}
+	threadID, err := normalizeThreadID(input.ThreadID)
+	if err != nil {
+		return WebhookInput{}, err
+	}
+	buttons, err := normalizeButtons(input.Buttons)
+	if err != nil {
+		return WebhookInput{}, err
+	}
+	cleanup, err := validateCleanupSettings(input.Cleanup)
+	if err != nil {
+		return WebhookInput{}, err
+	}
+	return WebhookInput{
+		Label:         input.Label,
+		URL:           webhookURL,
+		RoleIDs:       roles,
+		Enabled:       input.Enabled,
+		Template:      template,
+		Username:      username,
+		AvatarURL:     avatar,
+		ThreadID:      threadID,
+		Buttons:       buttons,
+		UpdateSeconds: normalizeUpdateSeconds(input.UpdateSeconds),
+		Cleanup:       cleanup,
+	}, nil
 }
 
 func (a *App) RemoveWebhook(id string) error {
@@ -841,7 +1232,10 @@ func (a *App) TestWebhook(id string) (discordPostResult, error) {
 	webhook := a.cfg.Webhooks[index]
 	a.mu.RUnlock()
 
-	result, err := postDiscord(webhook.URL, buildTestWebhookPayload(time.Now()))
+	payload := buildTestWebhookPayload(time.Now())
+	payload.Username = webhook.Username
+	payload.AvatarURL = webhook.AvatarURL
+	result, err := postDiscordContextWithOptions(context.Background(), webhook.URL, payload, discordWebhookOptions{ThreadID: webhook.ThreadID})
 	if err != nil {
 		a.recordWebhookFailure(webhook.ID, err)
 		a.addActivity("error", fmt.Sprintf("Webhook test for %s failed: %v", webhook.Label, err))
@@ -888,7 +1282,14 @@ func (a *App) SendSample(channelID string, webhookIDs []string) (int, error) {
 		if webhook == nil {
 			continue
 		}
-		if _, err := postDiscord(webhook.URL, buildPayload(*webhook, info, now, true)); err != nil {
+		var destination *Destination
+		for i := range channel.Destinations {
+			if channel.Destinations[i].WebhookID == webhookID {
+				destination = &channel.Destinations[i]
+				break
+			}
+		}
+		if _, err := postDiscordContextWithOptions(context.Background(), webhook.URL, buildPayloadForDestination(*webhook, destination, info, now, true), discordWebhookOptions{ThreadID: webhook.ThreadID}); err != nil {
 			a.recordWebhookFailure(webhook.ID, err)
 			a.addActivity("error", fmt.Sprintf("Sample post to %s failed: %v", webhook.Label, err))
 			continue
@@ -904,16 +1305,43 @@ func (a *App) SendSample(channelID string, webhookIDs []string) (int, error) {
 }
 
 func (a *App) Preview(template Template, channelID, webhookLabel string, roleIDs []string) (discordWebhookPayload, []string) {
-	if strings.TrimSpace(webhookLabel) == "" {
-		webhookLabel = "Discord"
+	return a.PreviewWithOptions(template, channelID, webhookLabel, roleIDs, false)
+}
+
+func (a *App) PreviewWithOptions(template Template, channelID, webhookLabel string, roleIDs []string, ended bool) (discordWebhookPayload, []string) {
+	return a.PreviewWebhook(Webhook{
+		Label:    webhookLabel,
+		RoleIDs:  roleIDs,
+		Template: template,
+	}, channelID, ended)
+}
+
+// PreviewWebhook renders a full destination-shaped webhook, including the
+// custom identity, thread-aware button links, and route-level template.
+func (a *App) PreviewWebhook(webhook Webhook, channelID string, ended bool) (discordWebhookPayload, []string) {
+	if strings.TrimSpace(webhook.Label) == "" {
+		webhook.Label = "Discord"
 	}
+	webhook.RoleIDs = sanitizeRoleIDs(webhook.RoleIDs)
 	info := a.previewInfo(channelID)
-	webhook := Webhook{Label: webhookLabel, Template: template, RoleIDs: sanitizeRoleIDs(roleIDs)}
+	if ended {
+		info.Live = false
+		info.Viewers = 0
+	}
 	payload := buildPayload(webhook, info, time.Now(), false)
+	template := webhook.Template
 	unknown := append([]string{}, unknownPlaceholders(template.Content)...)
 	unknown = append(unknown, unknownPlaceholders(template.EmbedTitle)...)
 	unknown = append(unknown, unknownPlaceholders(template.EmbedDescription)...)
 	unknown = append(unknown, unknownPlaceholders(template.Footer)...)
+	for _, field := range template.CustomFields {
+		unknown = append(unknown, unknownPlaceholders(field.Name)...)
+		unknown = append(unknown, unknownPlaceholders(field.Value)...)
+	}
+	for _, button := range webhook.Buttons {
+		unknown = append(unknown, unknownPlaceholders(button.Label)...)
+		unknown = append(unknown, unknownPlaceholders(button.URL)...)
+	}
 	seen := map[string]bool{}
 	var unique []string
 	for _, token := range unknown {
@@ -990,6 +1418,7 @@ func (a *App) UpdateSettings(settings Settings) error {
 	}
 
 	a.mu.Lock()
+	settings.DashboardTokenHash = a.cfg.Settings.DashboardTokenHash
 	a.cfg.Settings = settings
 	err := a.persistLocked()
 	a.mu.Unlock()

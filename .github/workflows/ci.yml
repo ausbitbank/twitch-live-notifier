@@ -18,11 +18,14 @@ jobs:
           go-version-file: go.mod
           cache: false
 
-      - name: Test
-        run: go test ./...
+      - name: Test with race detector
+        run: go test -race ./...
 
       - name: Vet
         run: go vet ./...
+
+      - name: Vet for Windows
+        run: GOOS=windows GOARCH=amd64 go vet ./...
 
       - name: Cross-compile Windows executable
         run: |
