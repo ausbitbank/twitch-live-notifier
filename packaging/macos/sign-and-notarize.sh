@@ -10,7 +10,9 @@ if [[ -n "${MACOS_CERT_P12_BASE64:-}" ]]; then
   tmpdir="$(mktemp -d)"
   keychain="$tmpdir/twitch-live.keychain-db"
   p12="$tmpdir/twitch-live.p12"
+  original_keychains="$(security list-keychains -d user | tr -d '"' | tr '\n' ' ')"
   cleanup() {
+    security list-keychains -d user -s $original_keychains >/dev/null 2>&1 || true
     security delete-keychain "$keychain" >/dev/null 2>&1 || true
     rm -rf "$tmpdir"
   }
@@ -21,6 +23,7 @@ if [[ -n "${MACOS_CERT_P12_BASE64:-}" ]]; then
   security unlock-keychain -p "" "$keychain"
   security import "$p12" -k "$keychain" -P "${MACOS_CERT_PASSWORD:-}" -T /usr/bin/codesign
   security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "" "$keychain" >/dev/null
+  security list-keychains -d user -s "$keychain" $original_keychains
   codesign --force --deep --options runtime --timestamp \
     --sign "${MACOS_SIGN_IDENTITY:?MACOS_SIGN_IDENTITY is required with MACOS_CERT_P12_BASE64}" \
     "$app"

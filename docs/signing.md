@@ -1,58 +1,230 @@
 # Signing and packaging
 
-Release tags build the normal artifacts even when no signing credentials are
+Release tags build normal artifacts even when no signing credentials are
 configured. Signing is opt-in through repository secrets so forks and local
 builds keep working.
 
+## What gets signed
+
+| Artifact | What happens |
+| --- | --- |
+| `TwitchLiveNotifier.exe` | Signed when `WINDOWS_CERT_PFX_BASE64` is set. |
+| Windows installer | Built after signing the executable, then signed too. |
+| Windows portable ZIP | Rebuilt with the signed executable. |
+| `Twitch Live to Discord.app` | Signed and notarized on a macOS runner when Apple secrets are set. |
+| Linux `.deb` / AppImage | Unsigned; Linux package signing is a separate future step. |
+
+A signed Windows build still needs SmartScreen reputation unless you use an EV
+certificate or a service with an established reputation. Signing removes the
+"Unknown publisher" problem first; SmartScreen warnings can clear over time.
+
 ## Windows
 
-The release workflow builds `TwitchLiveNotifier.exe`, signs it when configured,
-creates the Inno Setup installer, signs the installer, rebuilds the portable ZIP,
-and updates `SHA256SUMS.txt`.
+### Choose a signing route first
 
-Repository secrets:
+Modern CA/Browser Forum rules require OV and EV code-signing private keys to live
+on FIPS 140-2 Level 2 / Common Criteria hardware. That means most new
+certificates arrive on a USB token or in a cloud HSM, not as an exportable
+`.pfx`.
 
-| Secret | Purpose |
-| --- | --- |
-| `WINDOWS_CERT_PFX_BASE64` | Base64-encoded `.pfx` code-signing certificate. |
-| `WINDOWS_CERT_PASSWORD` | Password for the `.pfx`. |
-| `WINDOWS_TIMESTAMP_URL` | Optional RFC 3161 timestamp server. Defaults to `http://timestamp.digicert.com`. |
+| Route | Best for | How CI signs |
+| --- | --- | --- |
+| **Existing exportable `.pfx`** | Older certificates, some cloud CAs that let you download a PFX | GitHub Windows runner with `signtool` (current workflow). |
+| **Hardware token** | You already have a USB token | Self-hosted Windows runner with the token attached; a GitHub-hosted runner cannot see it. |
+| **Azure Trusted Signing** | CI-first signing without a token | Azure identity + GitHub OIDC; workflow calls the Azure signing action or `signtool` with the Trusted Signing dlib. |
+| **SSL.com eSigner / DigiCert KeyLocker / Sectigo cloud** | Cloud HSM signing with a CA you already use | Workflow calls the provider's signing action/CLI. |
+| **SignPath Foundation** | Eligible open-source projects, free | Upload unsigned artifact to SignPath, download signed artifact in the release job. |
 
-To create the base64 value on Linux/macOS:
+The current repository workflow implements the **exportable PFX** route. If you
+choose Azure Trusted Signing, SignPath, or another cloud signer, the workflow
+needs a provider-specific signing step; ask and it can be wired in.
+
+### PFX route
+
+1. Obtain an OV or EV code-signing certificate and export it as a password-
+   protected `.pfx`. Include the private key and the full chain.
+2. Base64-encode it without line breaks:
+
+   ```bash
+   base64 < certificate.pfx | tr -d '\n' > certificate.pfx.b64
+   ```
+
+3. Set these repository secrets:
+
+   | Secret | Value |
+   | --- | --- |
+   | `WINDOWS_CERT_PFX_BASE64` | Contents of `certificate.pfx.b64`. |
+   | `WINDOWS_CERT_PASSWORD` | The `.pfx` password. |
+   | `WINDOWS_TIMESTAMP_URL` | Optional RFC 3161 URL; defaults to `http://timestamp.digicert.com`. |
+
+4. The release workflow signs `TwitchLiveNotifier.exe` before building the
+   installer, then signs the installer, rebuilds the portable ZIP, and updates
+   `SHA256SUMS.txt`.
+
+For a local Linux test with an exportable PFX and `osslsigncode`:
 
 ```bash
-base64 < certificate.pfx | tr -d '\n' > certificate.pfx.b64
+osslsigncode sign \
+  -pkcs12 certificate.pfx -pass "$PFX_PASSWORD" \
+  -t http://timestamp.digicert.com -h sha256 \
+  -in TwitchLiveNotifier.exe -out TwitchLiveNotifier-signed.exe
 ```
-
-Use an OV or EV code-signing certificate. A newly issued certificate still needs
-reputation before SmartScreen stops warning; EV certificates usually clear
-faster. The executable and installer are both signed with SHA-256 and a
-timestamp.
 
 The Inno Setup installer is per-user (`%LOCALAPPDATA%\Programs\Twitch Live to
 Discord`), creates Start Menu and optional desktop shortcuts, and never touches
 `%APPDATA%\TwitchLiveNotifier`, so upgrades preserve settings and secrets.
 
+### Hardware-token route
+
+A GitHub-hosted runner cannot access your USB token. Use one of:
+
+- A self-hosted Windows runner with the token attached and the signing step
+  running on that runner.
+- A cloud signing service that keeps the key in its HSM (recommended if you do
+  not want to maintain a runner).
+
+The current `signtool` script is easy to reuse on a self-hosted runner once the
+token is visible to the Windows certificate store.
+
+### Verify Windows signatures
+
+On Windows:
+
+```powershell
+signtool verify /pa /v dist\TwitchLiveNotifier.exe
+signtool verify /pa /v dist\installer\TwitchLiveNotifier-vX.Y.Z-Windows-x64-Setup.exe
+Get-AuthenticodeSignature dist\TwitchLiveNotifier.exe | Format-List
+```
+
+On Linux with `osslsigncode` installed:
+
+```bash
+osslsigncode verify -in TwitchLiveNotifier.exe
+```
+
 ## macOS
 
-The macOS archive contains both raw binaries and `Twitch Live to Discord.app`
-bundles for Intel and Apple Silicon. The app bundle starts the dashboard, opens
-it in the browser, and keeps running until the app is quit.
+### Prerequisites
 
-Repository secrets:
+- A paid Apple Developer Program membership.
+- The team ID from <https://developer.apple.com/account> → Membership.
+- A **Developer ID Application** certificate. You do **not** need a Mac to create
+  the certificate; you can generate the CSR and export the `.p12` on Linux.
 
-| Secret | Purpose |
+### Generate a Developer ID Application certificate on Linux
+
+1. Generate a private key and CSR:
+
+   ```bash
+   openssl req -new -newkey rsa:2048 -nodes \
+     -keyout developerID.key \
+     -out developerID.certSigningRequest \
+     -subj "/emailAddress=you@example.com/CN=Your Name/C=US"
+   ```
+
+2. In the Apple Developer portal, open **Certificates, Identifiers & Profiles →
+   Certificates → + → Developer ID Application**, upload the CSR, and download
+   the `.cer`.
+3. Convert the certificate and bundle it with the private key:
+
+   ```bash
+   openssl x509 -inform DER -in developerID.cer -out developerID.pem
+   openssl pkcs12 -export \
+     -inkey developerID.key \
+     -in developerID.pem \
+     -name "Developer ID Application: Your Name (TEAMID)" \
+     -out developerID.p12
+   ```
+
+   Use a strong password and keep both the `.key` and `.p12` private.
+4. Base64-encode the `.p12`:
+
+   ```bash
+   base64 < developerID.p12 | tr -d '\n' > developerID.p12.b64
+   ```
+
+5. Read the exact signing identity from the certificate:
+
+   ```bash
+   openssl x509 -inform DER -in developerID.cer -noout -subject
+   ```
+
+   Use the `CN=` value, for example
+   `Developer ID Application: Your Name (TEAMID)`, as `MACOS_SIGN_IDENTITY`.
+
+6. Create an Apple app-specific password at <https://appleid.apple.com> →
+   **Sign-In and Security → App-Specific Passwords**. Label it something like
+   `GitHub Actions notarization`.
+
+### macOS repository secrets
+
+| Secret | Value |
 | --- | --- |
-| `MACOS_CERT_P12_BASE64` | Base64-encoded Developer ID Application certificate. |
-| `MACOS_CERT_PASSWORD` | Password for the `.p12`. |
-| `MACOS_SIGN_IDENTITY` | Exact codesign identity, for example `Developer ID Application: Name (TEAMID)`. |
+| `MACOS_CERT_P12_BASE64` | Contents of `developerID.p12.b64`. |
+| `MACOS_CERT_PASSWORD` | Password used when exporting the `.p12`. |
+| `MACOS_SIGN_IDENTITY` | `Developer ID Application: Your Name (TEAMID)`. |
 | `APPLE_ID` | Apple ID used for notarization. |
 | `APPLE_TEAM_ID` | Apple Developer team ID. |
-| `APPLE_APP_PASSWORD` | App-specific password for notarization. |
+| `APPLE_APP_PASSWORD` | App-specific password from the step above. |
 
-When `MACOS_CERT_P12_BASE64` is present, a macOS runner signs and notarizes the
-app bundles and replaces the macOS archive and checksum. If the Apple
-notarization secrets are missing, the app is signed but not notarized.
+When `MACOS_CERT_P12_BASE64` is present, a macOS runner imports the certificate
+into a temporary keychain, signs the app bundles with hardened runtime and a
+timestamp, notarizes them with `notarytool`, staples the ticket, and replaces the
+macOS archive and checksum. If the Apple notarization secrets are missing, the
+app is signed but not notarized.
+
+### Verify macOS signatures and notarization
+
+On a Mac:
+
+```bash
+codesign --verify --deep --strict --verbose=2 "Twitch Live to Discord.app"
+spctl --assess --type execute --verbose=4 "Twitch Live to Discord.app"
+xcrun stapler validate "Twitch Live to Discord.app"
+```
+
+Unsigned or un-notarized builds may require a Gatekeeper override on first launch.
+
+## Setting the GitHub secrets
+
+Use `gh` from this repository. For file-backed secrets:
+
+```bash
+gh secret set MACOS_CERT_P12_BASE64 < developerID.p12.b64
+gh secret set WINDOWS_CERT_PFX_BASE64 < certificate.pfx.b64
+```
+
+For text secrets, let `gh` prompt so the value is not left in shell history:
+
+```bash
+gh secret set MACOS_CERT_PASSWORD
+gh secret set MACOS_SIGN_IDENTITY
+gh secret set APPLE_ID
+gh secret set APPLE_TEAM_ID
+gh secret set APPLE_APP_PASSWORD
+gh secret set WINDOWS_CERT_PASSWORD
+gh secret set WINDOWS_TIMESTAMP_URL
+```
+
+Check what is configured:
+
+```bash
+gh secret list
+```
+
+GitHub repository secrets are limited to 48 KB each. A normal PFX/P12 with the
+leaf certificate and intermediates is well under that. If yours is larger, export
+a minimal chain or fetch the certificate from a secret manager in the workflow
+instead of storing it as a GitHub secret.
+
+Recommended hardening:
+
+- Put release secrets in a protected GitHub Environment, not just repository
+  secrets, and require a reviewer for tags.
+- Restrict who can push tags.
+- Keep certificates and app-specific passwords in a password manager.
+- Rotate the Apple app-specific password if it is ever exposed.
+- Revoke and reissue a certificate immediately if its private key is exposed.
 
 ## Linux
 
@@ -72,6 +244,9 @@ systemctl --user enable --now twitch-live-notifier
 The AppImage is a single executable; mark it executable and run it. The deb
 installs a desktop entry and `twitch-live-notifier-launch`, which starts the
 server and opens the dashboard. The systemd user service runs `--serve` only.
+
+Linux package signing (`.deb` repository signatures and AppImage signing) is not
+yet implemented.
 
 ## winget
 
