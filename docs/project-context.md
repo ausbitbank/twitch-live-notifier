@@ -250,8 +250,10 @@ TwitchLiveNotifier.exe --healthcheck
 - All platforms prevent multiple instances per settings file.
 - Webhook URLs are encrypted at rest where a keyring is available. Without a
   keyring, the fallback key file is only as private as the settings folder.
-- Windows and macOS artifacts are unsigned unless the release signing secrets are
-  configured.
+- Windows and macOS artifacts are unsigned unless signing is configured. Free
+  Windows signing is possible via SignPath Foundation or OSSign for eligible OSS;
+  macOS Developer ID signing requires a paid Apple Developer Program membership.
+  A free Homebrew/source-build path for macOS is included.
 - Windows installer, portable ZIP, Linux `.deb`/AppImage, macOS `.app`, and
   update checks are implemented. Silent self-replacing auto-update is not.
 - The dashboard has no authentication by default. It can be protected with an

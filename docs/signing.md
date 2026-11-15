@@ -18,6 +18,63 @@ A signed Windows build still needs SmartScreen reputation unless you use an EV
 certificate or a service with an established reputation. Signing removes the
 "Unknown publisher" problem first; SmartScreen warnings can clear over time.
 
+## No-cost options
+
+### Windows
+
+| Option | Cost | Hardware needed | Notes |
+| --- | --- | --- | --- |
+| **SignPath Foundation** | Free for eligible OSS | None | Certificate issued to SignPath Foundation, private key in their HSM. Apply at <https://signpath.org/apply>. |
+| **OSSign** | Free for qualifying OSS | None | Community-run initiative; signs with its own certificate. Apply at <https://ossign.org>. |
+| **Self-signed certificate** | Free | None | **Not trusted** by Windows or SmartScreen; only useful for local testing. |
+| **Certum Open Source Code Signing** | Discounted, not free | Smart card + reader | Hardware requirement makes it unsuitable for hosted CI. |
+| **Azure Trusted Signing, SSL.com eSigner, DigiCert KeyLocker, etc.** | Paid | None/cloud | CI-friendly but not free. |
+
+Both SignPath Foundation and OSSign decide eligibility. They generally require a
+public OSI-licensed project, active maintenance, a documented download page, and
+enough reputation that their certificate is not being used to vouch for unknown
+software. A brand-new repository may be rejected; apply after the project has a
+release history and a code-signing policy page.
+
+The repository now includes [CODE_SIGNING.md](../CODE_SIGNING.md), which satisfies
+the SignPath policy-page requirement. SignPath integration needs provider-side
+project IDs and an API token; the current release workflow only implements the
+PFX route.
+
+### Applying to SignPath Foundation
+
+Apply at <https://signpath.org/apply> with:
+
+- Repository: `https://github.com/ausbitbank/twitch-live-notifier`
+- Download page: `https://github.com/ausbitbank/twitch-live-notifier/releases`
+- License: MIT
+- Signing policy: link to `CODE_SIGNING.md`
+- Artifacts: `TwitchLiveNotifier.exe` and the Windows installer
+
+After acceptance, collect the SignPath organization ID, project ID, signing
+policy slug, and API token. Those go into repository secrets (or a protected
+`release` environment), and the Windows release job can submit the unsigned
+exe/installer and download the signed result. The workflow does not currently
+have those provider-specific steps because they cannot be tested before the
+project is accepted.
+
+### macOS
+
+There is **no free substitute for an Apple Developer ID certificate**. Apple
+Gatekeeper trust for distributed apps requires the paid Apple Developer Program.
+
+Practical free paths:
+
+- **Build from source or install through Homebrew.** Locally built binaries do
+  not carry the quarantine attribute, so Gatekeeper treats them as local code.
+  The included [Homebrew formula](../packaging/homebrew/README.md) installs the
+  CLI and a `brew services` launch agent.
+- **Ship the unsigned `.app` with instructions.** Users can right-click → Open or
+  remove the quarantine attribute:
+  `xattr -d com.apple.quarantine "Twitch Live to Discord.app"`.
+- **Ad-hoc signing** (`codesign --sign -`) does not satisfy Gatekeeper or
+  notarization for downloaded apps; it is not a public distribution solution.
+
 ## Windows
 
 ### Choose a signing route first

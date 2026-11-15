@@ -114,6 +114,10 @@ streamers, destinations, templates, and secrets are preserved.
 3. The app bundle opens the dashboard automatically. The raw binary prints the
    URL, normally <http://127.0.0.1:8787/>.
 
+The macOS app is unsigned unless Apple Developer signing is configured; see
+[docs/signing.md](docs/signing.md). A free source-build path is available through
+the Homebrew formula in [packaging/homebrew](packaging/homebrew/).
+
 Then, on any platform:
 
 1. Click **Add destination** and paste a Discord webhook URL.
@@ -539,6 +543,19 @@ This requires `go-winres` and ImageMagick.
 - Prebuilt artifacts are 64-bit Windows/Linux and Intel/Apple Silicon macOS.
   Docker images cover `linux/amd64` and `linux/arm64`; other Go targets can be
   built from source.
+
+## Code signing policy
+
+Free code signing provided by [SignPath.io](https://about.signpath.io),
+certificate by [SignPath Foundation](https://signpath.org). Release signing is
+limited to artifacts built from this public repository and manually approved by
+the maintainer. See [CODE_SIGNING.md](CODE_SIGNING.md) for roles, privacy, and
+uninstallation details.
+
+Windows signing through SignPath Foundation is subject to their eligibility
+review. macOS Developer ID signing and notarization require a paid Apple
+Developer Program membership; the free macOS path is a source/Homebrew install
+or running an unsigned app with a Gatekeeper override.
 
 ## Roadmap and research
 

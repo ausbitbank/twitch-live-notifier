@@ -239,8 +239,10 @@ downloaded binary.
 ### P1: Installer, signing, and auto-update
 
 **Implemented on `main`; release pending.** Packaging scripts, update checks,
-and optional signing hooks are in place. Signed public artifacts require
-repository signing secrets.
+and optional signing hooks are in place. Windows signing can use a free
+SignPath Foundation/OSSign OSS application or a paid/cloud certificate. macOS
+Developer ID signing requires a paid Apple Developer Program membership; a free
+Homebrew/source-build path is included.
 
 Deliverables:
 
