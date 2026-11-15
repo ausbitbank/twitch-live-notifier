@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -396,5 +397,62 @@ func TestSetChannelDiscordID(t *testing.T) {
 	}
 	if app.ConfigSnapshot().Channels[0].DiscordID != "" {
 		t.Fatal("Discord ID was not cleared")
+	}
+}
+
+func TestInvalidDestinationIsMarkedAndSkipped(t *testing.T) {
+	twitch := newTwitchTestServer(t, liveTwitchJSON)
+	setTwitchTestURL(t, twitch)
+
+	var failingCalls atomic.Int32
+	failing := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		failingCalls.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = io.WriteString(w, `{"message":"Invalid Webhook Token","code":50027}`)
+	}))
+	defer failing.Close()
+	working, capture := newDiscordCapture(t)
+
+	app := newTestApp(t)
+	broken := injectWebhook(t, app, "Broken", failing.URL+"/api/webhooks/1/token")
+	healthy := injectWebhook(t, app, "Healthy", working.URL+"/api/webhooks/2/token")
+	channel, err := app.AddChannel("teststreamer")
+	if err != nil {
+		t.Fatalf("AddChannel returned error: %v", err)
+	}
+	if err := app.SetDestinations(channel.ID, []string{broken.ID, healthy.ID}); err != nil {
+		t.Fatalf("SetDestinations returned error: %v", err)
+	}
+
+	summary, err := app.CheckNow(context.Background())
+	if err != nil {
+		t.Fatalf("CheckNow returned error: %v", err)
+	}
+	if summary.Posted != 1 || summary.Errors != 1 || capture.count() != 1 {
+		t.Fatalf("summary = %+v, calls = %d", summary, capture.count())
+	}
+	cfg := app.ConfigSnapshot()
+	if !cfg.Webhooks[0].Invalid || cfg.Webhooks[0].LastError == "" {
+		t.Fatalf("broken webhook = %+v", cfg.Webhooks[0])
+	}
+	if cfg.Webhooks[1].LastSuccessAt == "" || cfg.Webhooks[1].Invalid {
+		t.Fatalf("healthy webhook = %+v", cfg.Webhooks[1])
+	}
+
+	summary, err = app.CheckNow(context.Background())
+	if err != nil {
+		t.Fatalf("second CheckNow returned error: %v", err)
+	}
+	if summary.Posted != 0 || summary.Errors != 0 || failingCalls.Load() != 1 || capture.count() != 1 {
+		t.Fatalf("second summary = %+v, failing calls = %d, healthy calls = %d", summary, failingCalls.Load(), capture.count())
+	}
+
+	replacement := "https://discord.com/api/webhooks/987654321012345678/replacementtoken12345"
+	if _, err := app.UpdateWebhook(broken.ID, "Repaired", replacement, true, defaultTemplate()); err != nil {
+		t.Fatalf("UpdateWebhook returned error: %v", err)
+	}
+	if app.ConfigSnapshot().Webhooks[0].Invalid {
+		t.Fatal("invalid flag survived a webhook URL change")
 	}
 }

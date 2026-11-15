@@ -552,6 +552,15 @@
     const connected = webhookConnectionCount(webhook.id);
     const template = webhook.template || state.default_template;
     const summary = truncate(template.content || template.embed_title || template.embed_description || "No message text", 120);
+    const badge = webhook.invalid
+      ? '<span class="badge badge-invalid">Invalid</span>'
+      : `<span class="badge ${webhook.enabled ? "badge-enabled" : "badge-disabled"}">${webhook.enabled ? "Active" : "Paused"}</span>`;
+    const error = webhook.last_error
+      ? `<div class="${webhook.invalid ? "channel-error" : "warning-box"}" style="margin-top:10px">${icon("bell")} <span>${escapeHTML(webhook.last_error)}${webhook.last_error_at ? ` · ${escapeHTML(formatRelative(webhook.last_error_at))}` : ""}</span></div>`
+      : "";
+    const lastSuccess = webhook.last_success_at
+      ? ` · last success ${formatRelative(webhook.last_success_at)}`
+      : "";
     return `
       <article class="destination-card">
         <div class="destination-head">
@@ -560,13 +569,14 @@
             <strong>${escapeHTML(webhook.label)}</strong>
             <code>${escapeHTML(maskWebhook(webhook.url))}</code>
           </div>
-          <span class="badge ${webhook.enabled ? "badge-enabled" : "badge-disabled"}">${webhook.enabled ? "Active" : "Paused"}</span>
+          ${badge}
         </div>
         <div class="template-preview-line"><strong>Message:</strong> ${escapeHTML(summary)}</div>
-        <div class="meta" style="margin-top:8px">${connected} streamer${connected === 1 ? "" : "s"} connected</div>
+        <div class="meta" style="margin-top:8px">${connected} streamer${connected === 1 ? "" : "s"} connected${lastSuccess}</div>
+        ${error}
         <div class="destination-actions">
           <button class="btn btn-small btn-ghost" data-action="edit-webhook" data-webhook="${webhook.id}">${icon("edit")} Edit & preview</button>
-          <button class="btn btn-small btn-ghost" data-action="test-webhook" data-webhook="${webhook.id}">${icon("send")} Test webhook</button>
+          <button class="btn btn-small btn-ghost" data-action="test-webhook" data-webhook="${webhook.id}">${icon("send")} ${webhook.invalid ? "Retry / test" : "Test webhook"}</button>
           <button class="btn btn-small btn-danger" data-action="remove-webhook" data-webhook="${webhook.id}">${icon("trash")} Remove</button>
         </div>
       </article>`;

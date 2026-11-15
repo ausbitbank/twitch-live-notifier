@@ -746,6 +746,11 @@ svg {
   color: var(--warning);
 }
 
+.badge-invalid {
+  background: rgba(255, 107, 138, 0.12);
+  color: var(--danger);
+}
+
 .chips {
   display: flex;
   flex-wrap: wrap;

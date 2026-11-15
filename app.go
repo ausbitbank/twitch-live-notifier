@@ -181,7 +181,7 @@ func (a *App) CheckChannelNow(id string) (bool, error) {
 	a.mu.Unlock()
 
 	go func() {
-		_, _ = a.checkChannel(channel, webhooks)
+		_, _ = a.checkChannel(context.Background(), channel, webhooks)
 		a.finishCheck()
 	}()
 	return true, nil
@@ -215,7 +215,7 @@ func (a *App) runCheck(ctx context.Context) (CheckSummary, error) {
 		default:
 		}
 
-		posted, err := a.checkChannel(channel, webhooks)
+		posted, err := a.checkChannel(ctx, channel, webhooks)
 		summary.Posted += posted
 		if err != nil {
 			summary.Errors++
@@ -236,11 +236,11 @@ func (a *App) finishCheck() {
 	a.mu.Unlock()
 }
 
-func (a *App) checkChannel(channel Channel, webhooks []Webhook) (int, error) {
+func (a *App) checkChannel(ctx context.Context, channel Channel, webhooks []Webhook) (int, error) {
 	previous := a.statusFor(channel.ID)
 	now := time.Now()
 
-	user, err := fetchTwitchChannel(channel.Login)
+	user, err := fetchTwitchChannelContext(ctx, channel.Login)
 	if err != nil {
 		a.mu.Lock()
 		status := previous
@@ -294,19 +294,21 @@ func (a *App) checkChannel(channel Channel, webhooks []Webhook) (int, error) {
 	var postErrors []string
 	for _, destination := range channel.Destinations {
 		webhook := findWebhook(webhooks, destination.WebhookID)
-		if webhook == nil || !webhook.Enabled {
+		if webhook == nil || !a.webhookAvailable(webhook.ID) {
 			continue
 		}
 		if destination.LastStreamID != "" && destination.LastStreamID == info.StreamID {
 			continue
 		}
 
-		result, postErr := postDiscord(webhook.URL, buildPayload(*webhook, info, now, false))
+		result, postErr := postDiscordContext(ctx, webhook.URL, buildPayload(*webhook, info, now, false))
 		if postErr != nil {
+			a.recordWebhookFailure(webhook.ID, postErr)
 			postErrors = append(postErrors, fmt.Sprintf("%s: %v", webhook.Label, postErr))
 			a.addActivity("error", fmt.Sprintf("Could not post to %s: %v", webhook.Label, postErr))
 			continue
 		}
+		a.recordWebhookSuccess(webhook.ID)
 		a.markPosted(channel.ID, webhook.ID, info.StreamID, result.MessageID, now)
 		posted++
 		a.addActivity("success", fmt.Sprintf("Posted %q to %s.", info.Title, webhook.Label))
@@ -337,6 +339,52 @@ func (a *App) markPosted(channelID, webhookID, streamID, messageID string, now t
 		}
 	}
 	a.persistLocked()
+}
+
+func (a *App) webhookAvailable(id string) bool {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	index := a.webhookIndexLocked(id)
+	if index < 0 {
+		return false
+	}
+	webhook := a.cfg.Webhooks[index]
+	return webhook.Enabled && !webhook.Invalid
+}
+
+func (a *App) recordWebhookSuccess(id string) {
+	now := time.Now().UTC().Format(time.RFC3339)
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	index := a.webhookIndexLocked(id)
+	if index < 0 {
+		return
+	}
+	webhook := &a.cfg.Webhooks[index]
+	webhook.LastSuccessAt = now
+	webhook.LastError = ""
+	webhook.LastErrorAt = ""
+	webhook.ConsecutiveFailures = 0
+	webhook.Invalid = false
+	_ = a.persistLocked()
+}
+
+func (a *App) recordWebhookFailure(id string, err error) {
+	now := time.Now().UTC().Format(time.RFC3339)
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	index := a.webhookIndexLocked(id)
+	if index < 0 {
+		return
+	}
+	webhook := &a.cfg.Webhooks[index]
+	webhook.LastError = truncateText(err.Error(), 300)
+	webhook.LastErrorAt = now
+	webhook.ConsecutiveFailures++
+	if isPermanentDiscordError(err) {
+		webhook.Invalid = true
+	}
+	_ = a.persistLocked()
 }
 
 func (a *App) statusFor(channelID string) ChannelStatus {
@@ -662,6 +710,12 @@ func (a *App) UpdateWebhook(id, label, rawURL string, enabled bool, template Tem
 	a.cfg.Webhooks[index].URL = webhookURL
 	a.cfg.Webhooks[index].Enabled = enabled
 	a.cfg.Webhooks[index].Template = template
+	if urlChanged || (enabled && !wasEnabled) {
+		a.cfg.Webhooks[index].Invalid = false
+		a.cfg.Webhooks[index].LastError = ""
+		a.cfg.Webhooks[index].LastErrorAt = ""
+		a.cfg.Webhooks[index].ConsecutiveFailures = 0
+	}
 	if urlChanged {
 		for channelIndex := range a.cfg.Channels {
 			for destinationIndex := range a.cfg.Channels[channelIndex].Destinations {
@@ -722,9 +776,11 @@ func (a *App) TestWebhook(id string) (discordPostResult, error) {
 
 	result, err := postDiscord(webhook.URL, buildTestWebhookPayload(time.Now()))
 	if err != nil {
+		a.recordWebhookFailure(webhook.ID, err)
 		a.addActivity("error", fmt.Sprintf("Webhook test for %s failed: %v", webhook.Label, err))
 		return discordPostResult{}, err
 	}
+	a.recordWebhookSuccess(webhook.ID)
 	a.addActivity("success", "Sent a test message to "+webhook.Label+".")
 	return result, nil
 }
@@ -766,9 +822,11 @@ func (a *App) SendSample(channelID string, webhookIDs []string) (int, error) {
 			continue
 		}
 		if _, err := postDiscord(webhook.URL, buildPayload(*webhook, info, now, true)); err != nil {
+			a.recordWebhookFailure(webhook.ID, err)
 			a.addActivity("error", fmt.Sprintf("Sample post to %s failed: %v", webhook.Label, err))
 			continue
 		}
+		a.recordWebhookSuccess(webhook.ID)
 		count++
 		a.addActivity("success", "Sent a last-stream sample to "+webhook.Label+".")
 	}

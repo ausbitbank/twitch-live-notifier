@@ -180,6 +180,11 @@ blocked. If a streamer has no Discord ID, `{discord_mention}` falls back to plai
 - Monitoring runs from the app process, even if the browser tab is closed.
 - The app checks every enabled streamer and posts to each connected destination
   only once per Twitch stream.
+- Failed Twitch checks retry a few times with jittered backoff. Discord `429`
+  responses wait for Discord's `Retry-After` delay and retry once.
+- A webhook that returns `401`, `403`, or `404` is marked **Invalid** and
+  skipped so the app does not hammer Discord. Fix the URL and use **Test
+  webhook** to clear it. Other destinations keep working.
 - Use **Check all now** for an immediate pass, or **Check now** on one streamer.
 - **Pause monitoring** stops automatic checks but still allows manual checks.
 - On Windows, **Start with Windows** launches the app quietly in the tray.

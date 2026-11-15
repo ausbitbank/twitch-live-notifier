@@ -43,6 +43,12 @@ type Webhook struct {
 	URL      string   `json:"url"`
 	Enabled  bool     `json:"enabled"`
 	Template Template `json:"template"`
+
+	LastError           string `json:"last_error,omitempty"`
+	LastErrorAt         string `json:"last_error_at,omitempty"`
+	LastSuccessAt       string `json:"last_success_at,omitempty"`
+	ConsecutiveFailures int    `json:"consecutive_failures,omitempty"`
+	Invalid             bool   `json:"invalid,omitempty"`
 }
 
 type Template struct {
