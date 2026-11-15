@@ -1,0 +1,9 @@
+# Build output
+dist/
+*.exe
+*.test
+*.out
+
+# Local settings (never commit webhook URLs)
+config.json
+*.local.json

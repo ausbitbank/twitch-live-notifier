@@ -1,0 +1,73 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - name: Test
+        run: go test ./...
+
+      - name: Install go-winres
+        run: |
+          go install github.com/tc-hib/go-winres@v0.3.3
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+
+      - name: Build
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          go-winres make --in winres/winres.json --arch amd64 --out rsrc --product-version "$version" --file-version "$version"
+          mkdir -p dist
+          CGO_ENABLED=0 GOOS=windows GOARCH=amd64 GOAMD64=v1 \
+            go build -trimpath -buildvcs=false \
+            -ldflags "-s -w -H=windowsgui -buildid= -X main.Version=${version}" \
+            -o dist/TwitchLiveNotifier.exe .
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+            go build -trimpath -buildvcs=false \
+            -ldflags "-s -w -X main.Version=${version}" \
+            -o dist/TwitchLiveNotifier-linux-amd64 .
+          for arch in amd64 arm64; do
+            CGO_ENABLED=0 GOOS=darwin GOARCH=$arch \
+              go build -trimpath -buildvcs=false \
+              -ldflags "-s -w -X main.Version=${version}" \
+              -o "dist/TwitchLiveNotifier-macos-$arch" .
+          done
+          cp README.md LICENSE dist/
+          mkdir -p dist/docs
+          cp docs/*.png dist/docs/
+          cd dist
+          zip -r "TwitchLiveNotifier-${GITHUB_REF_NAME}-Windows-x64.zip" \
+            TwitchLiveNotifier.exe README.md LICENSE docs/*.png
+          tar -czf "TwitchLiveNotifier-${GITHUB_REF_NAME}-Linux-x64.tar.gz" \
+            TwitchLiveNotifier-linux-amd64 README.md LICENSE docs
+          tar -czf "TwitchLiveNotifier-${GITHUB_REF_NAME}-macOS.tar.gz" \
+            TwitchLiveNotifier-macos-amd64 TwitchLiveNotifier-macos-arm64 README.md LICENSE docs
+          sha256sum TwitchLiveNotifier.exe TwitchLiveNotifier-linux-amd64 \
+            TwitchLiveNotifier-macos-amd64 TwitchLiveNotifier-macos-arm64 \
+            "TwitchLiveNotifier-${GITHUB_REF_NAME}-Windows-x64.zip" \
+            "TwitchLiveNotifier-${GITHUB_REF_NAME}-Linux-x64.tar.gz" \
+            "TwitchLiveNotifier-${GITHUB_REF_NAME}-macOS.tar.gz" > SHA256SUMS.txt
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/TwitchLiveNotifier-${{ github.ref_name }}-Windows-x64.zip
+            dist/TwitchLiveNotifier-${{ github.ref_name }}-Linux-x64.tar.gz
+            dist/TwitchLiveNotifier-${{ github.ref_name }}-macOS.tar.gz
+            dist/SHA256SUMS.txt
+          generate_release_notes: true
