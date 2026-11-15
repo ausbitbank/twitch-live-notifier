@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"testing"
+	"time"
 )
 
 func TestNormalizeTwitchLogin(t *testing.T) {
@@ -98,6 +99,7 @@ func TestConfigRoundTrip(t *testing.T) {
 				WebhookID:    "webhook1",
 				LastStreamID: "319913347671",
 				LastPostedAt: "2026-11-15T06:00:00Z",
+				RetryUntil:   time.Now().Add(time.Hour).UTC().Format(time.RFC3339),
 			}},
 			Filters: Filters{
 				IncludeGames:    []string{"Just Chatting"},

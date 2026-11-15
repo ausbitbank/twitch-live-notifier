@@ -59,6 +59,10 @@ type CheckSummary struct {
 	Errors   int
 }
 
+// defaultCheckTimeout prevents a huge live wave or a long rate-limit window
+// from leaving a check running forever. A later scheduled check can continue.
+const defaultCheckTimeout = 15 * time.Minute
+
 type App struct {
 	mu              sync.RWMutex
 	cfg             Config
@@ -169,7 +173,15 @@ func (a *App) TriggerCheck() bool {
 	a.mu.Unlock()
 
 	go func() {
-		_, _ = a.runCheck(context.Background())
+		a.mu.RLock()
+		parent := a.ctx
+		a.mu.RUnlock()
+		if parent == nil {
+			parent = context.Background()
+		}
+		ctx, cancel := context.WithTimeout(parent, defaultCheckTimeout)
+		defer cancel()
+		_, _ = a.runCheck(ctx)
 	}()
 	return true
 }
@@ -191,7 +203,15 @@ func (a *App) CheckChannelNow(id string) (bool, error) {
 	a.mu.Unlock()
 
 	go func() {
-		_, _ = a.checkChannel(context.Background(), channel, webhooks)
+		a.mu.RLock()
+		parent := a.ctx
+		a.mu.RUnlock()
+		if parent == nil {
+			parent = context.Background()
+		}
+		ctx, cancel := context.WithTimeout(parent, defaultCheckTimeout)
+		defer cancel()
+		_, _ = a.checkChannel(ctx, channel, webhooks)
 		a.finishCheck()
 	}()
 	return true, nil
@@ -205,6 +225,8 @@ func (a *App) CheckNow(ctx context.Context) (CheckSummary, error) {
 	}
 	a.checking = true
 	a.mu.Unlock()
+	ctx, cancel := context.WithTimeout(ctx, defaultCheckTimeout)
+	defer cancel()
 	return a.runCheck(ctx)
 }
 
@@ -319,6 +341,9 @@ func (a *App) checkChannel(ctx context.Context, channel Channel, webhooks []Webh
 		if webhook == nil || !a.webhookAvailable(webhook.ID) {
 			continue
 		}
+		if destinationRateLimited(destination, time.Now()) {
+			continue
+		}
 		if destination.LastStreamID != "" && destination.LastStreamID == info.StreamID {
 			a.markLiveSnapshot(channel.ID, webhook.ID, info)
 			a.maybeUpdateLiveMessage(ctx, channel.ID, destination, *webhook, info, now)
@@ -328,10 +353,16 @@ func (a *App) checkChannel(ctx context.Context, channel Channel, webhooks []Webh
 		result, postErr := postDiscordContextWithOptions(ctx, webhook.URL, buildPayloadForDestination(*webhook, &destination, info, now, false), discordWebhookOptions{ThreadID: webhook.ThreadID})
 		if postErr != nil {
 			a.recordWebhookFailure(webhook.ID, postErr)
+			if delay := rateLimitDelay(postErr); delay > 0 {
+				a.markDestinationRateLimited(channel.ID, webhook.ID, delay)
+				a.addActivity("error", fmt.Sprintf("Rate limited by %s; retrying after %s.", webhook.Label, formatDuration(delay)))
+			} else {
+				a.addActivity("error", fmt.Sprintf("Could not post to %s: %v", webhook.Label, postErr))
+			}
 			postErrors = append(postErrors, fmt.Sprintf("%s: %v", webhook.Label, postErr))
-			a.addActivity("error", fmt.Sprintf("Could not post to %s: %v", webhook.Label, postErr))
 			continue
 		}
+		a.clearDestinationRateLimit(channel.ID, webhook.ID)
 		a.recordWebhookSuccess(webhook.ID)
 		a.markPosted(channel.ID, webhook.ID, info, result.MessageID, webhook.URL, webhook.ThreadID, now)
 		posted++
@@ -378,11 +409,20 @@ func (a *App) cleanupLiveMessages(ctx context.Context, channel Channel, webhooks
 			a.clearLiveMessage(channel.ID, destination.WebhookID)
 			continue
 		}
+		if mode != cleanupOff && destinationRateLimited(destination, time.Now()) {
+			continue
+		}
 		clear, err := a.applyCleanup(ctx, *webhook, destination, fallback, now)
 		if err != nil {
 			a.recordWebhookFailure(webhook.ID, err)
-			a.addActivity("error", fmt.Sprintf("Could not %s the live message in %s: %v", cleanupVerb(mode), webhook.Label, err))
+			if delay := rateLimitDelay(err); delay > 0 {
+				a.markDestinationRateLimited(channel.ID, webhook.ID, delay)
+				a.addActivity("error", fmt.Sprintf("Rate limited while cleaning up the live message in %s; retrying after %s.", webhook.Label, formatDuration(delay)))
+			} else {
+				a.addActivity("error", fmt.Sprintf("Could not %s the live message in %s: %v", cleanupVerb(mode), webhook.Label, err))
+			}
 		} else if mode != cleanupOff {
+			a.clearDestinationRateLimit(channel.ID, webhook.ID)
 			message := "Cleaned up the live message in " + webhook.Label + "."
 			switch mode {
 			case cleanupDelete:
@@ -501,6 +541,9 @@ func (a *App) maybeUpdateLiveMessage(ctx context.Context, channelID string, dest
 	if webhook.UpdateSeconds <= 0 {
 		return
 	}
+	if destinationRateLimited(destination, time.Now()) {
+		return
+	}
 	record := destination.LiveMessage
 	if record == nil || record.MessageID == "" || record.StreamID != info.StreamID {
 		return
@@ -519,12 +562,18 @@ func (a *App) maybeUpdateLiveMessage(ctx context.Context, channelID string, dest
 	payload.AvatarURL = ""
 	if _, err := editDiscordContext(ctx, targetURL, record.MessageID, payload, threadID); err != nil {
 		a.recordWebhookFailure(webhook.ID, err)
-		if cleanupClearOnError(err) {
-			a.clearLiveMessage(channelID, webhook.ID)
+		if delay := rateLimitDelay(err); delay > 0 {
+			a.markDestinationRateLimited(channelID, webhook.ID, delay)
+			a.addActivity("error", fmt.Sprintf("Rate limited updating the live message in %s; retrying after %s.", webhook.Label, formatDuration(delay)))
+		} else {
+			if cleanupClearOnError(err) {
+				a.clearLiveMessage(channelID, webhook.ID)
+			}
+			a.addActivity("error", fmt.Sprintf("Could not update the live message in %s: %v", webhook.Label, err))
 		}
-		a.addActivity("error", fmt.Sprintf("Could not update the live message in %s: %v", webhook.Label, err))
 		return
 	}
+	a.clearDestinationRateLimit(channelID, webhook.ID)
 	a.recordWebhookSuccess(webhook.ID)
 	a.markDestinationEdited(channelID, webhook.ID, now)
 	a.addActivity("info", fmt.Sprintf("Updated the live message in %s.", webhook.Label))
@@ -540,6 +589,7 @@ func (a *App) markPosted(channelID, webhookID string, info StreamInfo, messageID
 				timestamp := now.UTC().Format(time.RFC3339)
 				destination.LastStreamID = info.StreamID
 				destination.LastPostedAt = timestamp
+				destination.RetryUntil = ""
 				if messageID != "" {
 					destination.LiveMessage = &LiveMessage{
 						MessageID:    messageID,
@@ -622,6 +672,74 @@ func (a *App) markDestinationEdited(channelID, webhookID string, now time.Time) 
 		destination := &a.cfg.Channels[index].Destinations[i]
 		if destination.WebhookID == webhookID && destination.LiveMessage != nil {
 			destination.LiveMessage.LastEditedAt = now.UTC().Format(time.RFC3339)
+			destination.RetryUntil = ""
+			_ = a.persistLocked()
+			return
+		}
+	}
+}
+
+func destinationRateLimited(destination Destination, now time.Time) bool {
+	value := strings.TrimSpace(destination.RetryUntil)
+	if value == "" {
+		return false
+	}
+	until, err := time.Parse(time.RFC3339, value)
+	if err != nil {
+		return false
+	}
+	return until.After(now)
+}
+
+func rateLimitDelay(err error) time.Duration {
+	var httpErr *discordHTTPError
+	if !errors.As(err, &httpErr) || httpErr.StatusCode != http.StatusTooManyRequests {
+		return 0
+	}
+	delay := httpErr.RetryAfter
+	if delay <= 0 {
+		delay = discordDefaultRetryIn
+	}
+	if delay > discordMaxDefer {
+		delay = discordMaxDefer
+	}
+	return delay
+}
+
+func (a *App) markDestinationRateLimited(channelID, webhookID string, delay time.Duration) {
+	if delay <= 0 {
+		return
+	}
+	if delay > discordMaxDefer {
+		delay = discordMaxDefer
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	index := a.channelIndexLocked(channelID)
+	if index < 0 {
+		return
+	}
+	for i := range a.cfg.Channels[index].Destinations {
+		destination := &a.cfg.Channels[index].Destinations[i]
+		if destination.WebhookID == webhookID {
+			destination.RetryUntil = time.Now().Add(delay).UTC().Format(time.RFC3339)
+			_ = a.persistLocked()
+			return
+		}
+	}
+}
+
+func (a *App) clearDestinationRateLimit(channelID, webhookID string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	index := a.channelIndexLocked(channelID)
+	if index < 0 {
+		return
+	}
+	for i := range a.cfg.Channels[index].Destinations {
+		destination := &a.cfg.Channels[index].Destinations[i]
+		if destination.WebhookID == webhookID && destination.RetryUntil != "" {
+			destination.RetryUntil = ""
 			_ = a.persistLocked()
 			return
 		}
@@ -1138,6 +1256,7 @@ func (a *App) UpdateWebhookInput(id string, input WebhookInput) (Webhook, error)
 				if a.cfg.Channels[channelIndex].Destinations[destinationIndex].WebhookID == id {
 					a.cfg.Channels[channelIndex].Destinations[destinationIndex].LastStreamID = ""
 					a.cfg.Channels[channelIndex].Destinations[destinationIndex].LastPostedAt = ""
+					a.cfg.Channels[channelIndex].Destinations[destinationIndex].RetryUntil = ""
 					a.cfg.Channels[channelIndex].Destinations[destinationIndex].LiveMessage = nil
 				}
 			}

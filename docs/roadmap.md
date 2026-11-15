@@ -330,6 +330,9 @@ This must be a separate opt-in mode with OAuth and clear permission scopes.
 
 - ~~Add health endpoint and structured local logs with webhook redaction.~~ Done
   in 2.2.0.
+- ~~Harden Discord rate-limit handling.~~ Persisted per-destination retry
+  windows, proactive `X-RateLimit-*` handling, short-window inline retries,
+  jittered fallbacks, and bounded check timeouts are implemented.
 - Add `context.Context` cancellation to remaining network calls and shutdown.
 - ~~Add Discord webhook health state and “disable after repeated failure” UI.~~
   Done in 2.2.0.

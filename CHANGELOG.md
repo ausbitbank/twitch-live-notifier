@@ -21,6 +21,22 @@
 - The app reports its version and update status but does not silently replace its
   own binary.
 
+### Rate limits
+
+- Persisted a per-destination `retry_until` window after Discord `429`s, so a
+  rate-limited destination is skipped until Discord's window expires instead of
+  being retried every check.
+- Long `429` windows no longer hold a check open; they are deferred and retried
+  on a later check.
+- Added proactive `X-RateLimit-Remaining` / `X-RateLimit-Reset-After` handling
+  and a per-webhook in-memory limiter.
+- Added jittered fallback delays when Discord does not provide a retry delay.
+- Added a 15-minute hard timeout for scheduled and manual checks.
+- Destination cards and streamer routing rows show when a webhook is rate
+  limited.
+
+### Packaging
+
 ## 2.3.0 - 2026-11-16
 
 ### Stream lifecycle

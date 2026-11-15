@@ -95,9 +95,10 @@ generic bot; **No** = not a core feature.
 - **Optional streamer and role pings with narrow allowed mentions.**
   `{discord_mention}` and `{role_mentions}` allow only configured IDs;
   `@everyone` and unconfigured roles remain blocked.
-- **Reliable delivery.** Twitch retries with jittered backoff, Discord 429s wait
-  for the server delay, and permanently invalid webhooks are marked instead of
-  retried forever.
+- **Reliable delivery.** Twitch retries with jittered backoff; Discord 429s
+  honor proactive rate-limit headers, retry short windows inline, and persist
+  long windows per destination so a rate-limited webhook is deferred rather than
+  hammered. Permanently invalid webhooks are marked instead of retried forever.
 - **Notification rules.** Game/title filters, viewer thresholds, quiet hours,
   allowed days, cooldowns, and alert delay are built in per streamer.
 - **Docker/self-host.** A multi-arch image, persistent volume, and `/healthz`

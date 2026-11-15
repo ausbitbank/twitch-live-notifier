@@ -70,6 +70,7 @@ Core promises:
 | `templates.go` | Placeholders, fallback syntax, custom fields, route templates, mention scoping, payload builder |
 | `twitch.go` | Twitch public web GraphQL client with bounded retries |
 | `discord.go` | Discord webhook POST, 429 handling, payload types, error classification |
+| `discord_limiter.go` | Per-webhook proactive rate-limit buckets and deferral |
 | `instance_lock.go` | Shared lock path resolution |
 | `instance_lock_unix.go` | Advisory `flock` single-instance lock for Linux/macOS |
 | `instance_lock_windows.go` | Named-mutex single-instance lock for Windows |
@@ -113,8 +114,13 @@ Core promises:
 - A new Twitch stream ID posts again.
 - A failed Discord post does not record the stream ID, so it retries on the next
   check.
-- Discord `429` honors `Retry-After`/`retry_after` and retries once for posts,
-  edits, and deletes.
+- Discord `429` honors `Retry-After`/`retry_after`. Short delays retry inline
+  once; long delays persist a per-destination `retry_until` window and the route
+  is skipped until it expires. Proactive `X-RateLimit-*` headers are honored.
+- Rate-limited destinations do not record dedupe, so the alert is retried after
+  the window. Destination cards and streamer routing rows show the rate-limit
+  state.
+- Scheduled and manual checks have a 15-minute timeout.
 - Discord `401`/`403`/`404` marks the destination invalid and skips it until the
   URL changes or a test succeeds. Other destinations keep working.
 - Config is saved after profile changes, successful posts, live edits, cleanup,

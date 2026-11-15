@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
 	"unicode/utf8"
 )
 
@@ -57,6 +58,7 @@ type Destination struct {
 	WebhookID    string       `json:"webhook_id"`
 	LastStreamID string       `json:"last_stream_id,omitempty"`
 	LastPostedAt string       `json:"last_posted_at,omitempty"`
+	RetryUntil   string       `json:"retry_until,omitempty"`
 	Template     *Template    `json:"template,omitempty"`
 	LiveMessage  *LiveMessage `json:"live_message,omitempty"`
 }
@@ -294,6 +296,18 @@ func normalizeUpdateSeconds(seconds int) int {
 // normalizeLiveMessage drops a record that cannot possibly be managed. Other
 // fields are retained so cleanup can still use the original title/game when
 // Twitch has already moved on to another broadcast.
+func normalizeRetryUntil(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	parsed, err := time.Parse(time.RFC3339, value)
+	if err != nil || !parsed.After(time.Now()) {
+		return ""
+	}
+	return value
+}
+
 func normalizeLiveMessage(message *LiveMessage) *LiveMessage {
 	if message == nil {
 		return nil
@@ -521,6 +535,7 @@ func normalizeConfig(cfg *Config) {
 				continue
 			}
 			seen[destination.WebhookID] = true
+			destination.RetryUntil = normalizeRetryUntil(destination.RetryUntil)
 			if destination.Template != nil {
 				normalized := normalizeTemplate(*destination.Template)
 				destination.Template = &normalized

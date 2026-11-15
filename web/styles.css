@@ -751,6 +751,11 @@ svg {
   color: var(--danger);
 }
 
+.badge-warn {
+  background: rgba(255, 196, 84, 0.12);
+  color: #ffc454;
+}
+
 .chips {
   display: flex;
   flex-wrap: wrap;
