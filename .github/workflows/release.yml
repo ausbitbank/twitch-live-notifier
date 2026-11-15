@@ -212,7 +212,7 @@ jobs:
             dist/SHA256SUMS.txt --clobber
 
   macos-sign:
-    needs: [release, packaging-secrets]
+    needs: [release, packaging-secrets, windows-installer]
     if: needs.packaging-secrets.outputs.macos == 'true'
     runs-on: macos-latest
     steps:
