@@ -86,6 +86,20 @@ jobs:
             -o dist/TwitchLiveNotifier.exe .
           ./packaging/windows/build-installer.ps1 -Version "0.0.0-ci" -ExePath "dist/TwitchLiveNotifier.exe"
           Get-Item "dist/installer/TwitchLiveNotifier-v0.0.0-ci-Windows-x64-Setup.exe" | Format-List Name,Length
+      - name: Verify portable ZIP
+        shell: pwsh
+        run: |
+          Copy-Item README.md, LICENSE -Destination dist -Force
+          New-Item -ItemType Directory -Force -Path dist/docs | Out-Null
+          Copy-Item docs/*.png -Destination dist/docs -Force
+          Compress-Archive -Path dist/TwitchLiveNotifier.exe, dist/README.md, dist/LICENSE, dist/docs -DestinationPath "dist/TwitchLiveNotifier-0.0.0-ci-Windows-x64.zip" -Force
+      - name: Verify winget rendering
+        shell: bash
+        run: |
+          ./packaging/winget/render.sh 0.0.0-ci "dist/installer/TwitchLiveNotifier-v0.0.0-ci-Windows-x64-Setup.exe" dist/winget
+          grep -q 'InstallerSha256: [0-9A-F]\{64\}' dist/winget/*.installer.yaml
+          cd dist
+          powershell -NoProfile -Command "Compress-Archive -Path 'winget/*' -DestinationPath 'TwitchLiveNotifier-v0.0.0-ci-winget.zip' -Force"
 
   macos-package:
     runs-on: macos-latest
