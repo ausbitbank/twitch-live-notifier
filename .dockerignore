@@ -1,0 +1,21 @@
+# Git and release output
+.git
+.github
+dist
+*.exe
+*.syso
+*.test
+*.out
+
+# Local settings and secrets
+config.json
+*.local.json
+
+# Documentation artwork is not needed in the image
+assets
+winres
+docs
+README.md
+CHANGELOG.md
+SECURITY.md
+LICENSE

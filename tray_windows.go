@@ -182,7 +182,7 @@ func runDesktop(configPath string, pathErr error, open bool) int {
 		case quit <- struct{}{}:
 		default:
 		}
-	})
+	}, "")
 	if err != nil {
 		showMessage(appName, "❌ "+err.Error(), true)
 		return 1

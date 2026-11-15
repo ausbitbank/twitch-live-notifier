@@ -7,3 +7,6 @@ dist/
 # Local settings (never commit webhook URLs)
 config.json
 *.local.json
+
+# Local binary from `go build`
+twitch-live-notifier

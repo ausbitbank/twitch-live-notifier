@@ -46,3 +46,6 @@ jobs:
               -ldflags "-s -w" \
               -o /tmp/TwitchLiveNotifier-macos-$arch .
           done
+
+      - name: Build Docker image
+        run: docker build -t twitch-live-notifier:ci .

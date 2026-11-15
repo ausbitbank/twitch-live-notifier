@@ -23,12 +23,15 @@ func runCLI(args []string, configPath string, pathErr error) int {
 	fs.SetOutput(io.Discard)
 
 	var (
-		background  = fs.Bool("background", false, "start in the tray without opening the dashboard")
-		check       = fs.Bool("check", false, "check all streamers once and exit")
-		serve       = fs.Bool("serve", false, "run the dashboard without the tray icon")
-		configFlag  = fs.String("config", "", "use a custom settings file")
-		showVersion = fs.Bool("version", false, "print the version")
-		showHelp    = fs.Bool("help", false, "show this help")
+		background         = fs.Bool("background", false, "start in the tray without opening the dashboard")
+		check              = fs.Bool("check", false, "check all streamers once and exit")
+		serve              = fs.Bool("serve", false, "run the dashboard without the tray icon")
+		healthcheck        = fs.Bool("healthcheck", false, "check the local /healthz endpoint and exit")
+		healthcheckURLFlag = fs.String("healthcheck-url", "", "health endpoint URL used by --healthcheck")
+		configFlag         = fs.String("config", "", "use a custom settings file")
+		listenFlag         = fs.String("listen", "", "dashboard listen address (default 127.0.0.1:8787)")
+		showVersion        = fs.Bool("version", false, "print the version")
+		showHelp           = fs.Bool("help", false, "show this help")
 	)
 	fs.BoolVar(showHelp, "h", false, "show this help")
 
@@ -54,15 +57,18 @@ func runCLI(args []string, configPath string, pathErr error) int {
 	}
 
 	actions := 0
-	for _, enabled := range []bool{*background, *check, *serve} {
+	for _, enabled := range []bool{*background, *check, *serve, *healthcheck} {
 		if enabled {
 			actions++
 		}
 	}
 	if actions > 1 {
 		prepareConsole()
-		fmt.Fprintln(os.Stderr, "Choose only one of --background, --check, or --serve.")
+		fmt.Fprintln(os.Stderr, "Choose only one of --background, --check, --serve, or --healthcheck.")
 		return 2
+	}
+	if *healthcheck {
+		return runHealthcheck(healthcheckURL(*healthcheckURLFlag, *listenFlag))
 	}
 
 	if *configFlag != "" {
@@ -80,7 +86,7 @@ func runCLI(args []string, configPath string, pathErr error) int {
 	case *background:
 		return runDesktop(configPath, nil, false)
 	case *serve:
-		return runServerOnly(configPath)
+		return runServerOnly(configPath, *listenFlag)
 	case *check:
 		return runCheckOnce(configPath)
 	default:
@@ -139,13 +145,18 @@ Usage:
   %s --serve
       Run the dashboard without the tray icon.
 
+  %s --healthcheck
+      Probe the local /healthz endpoint and exit. Used by Docker.
+
 Options:
-  --config PATH   Use a custom settings file.
-  --version       Print the version.
-  --help, -h      Show this help.
+  --config PATH          Use a custom settings file.
+  --listen ADDR          Dashboard address (default 127.0.0.1:8787).
+  --healthcheck-url URL  Health URL for --healthcheck.
+  --version              Print the version.
+  --help, -h             Show this help.
 
 Settings are stored in:
-  %s`, appName, Version, exe, exe, exe, exe, settingsPath)
+  %s`, appName, Version, exe, exe, exe, exe, exe, settingsPath)
 	}
 	return fmt.Sprintf(`%s v%s
 
@@ -156,11 +167,16 @@ Usage:
   %s --check
       Check every streamer once, post any pending alerts, and exit.
 
+  %s --healthcheck
+      Probe the local /healthz endpoint and exit. Used by Docker.
+
 Options:
-  --config PATH   Use a custom settings file.
-  --version       Print the version.
-  --help, -h      Show this help.
+  --config PATH          Use a custom settings file.
+  --listen ADDR          Dashboard address (default 127.0.0.1:8787).
+  --healthcheck-url URL  Health URL for --healthcheck.
+  --version              Print the version.
+  --help, -h             Show this help.
 
 Settings are stored in:
-  %s`, appName, Version, exe, exe, settingsPath)
+  %s`, appName, Version, exe, exe, exe, settingsPath)
 }

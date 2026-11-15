@@ -1,0 +1,28 @@
+name: twitch-live-notifier
+
+services:
+  app:
+    image: ${TWITCH_LIVE_IMAGE:-ghcr.io/ausbitbank/twitch-live-notifier:latest}
+    build:
+      context: .
+    container_name: twitch-live-notifier
+    restart: unless-stopped
+    command:
+      - --serve
+      - --listen
+      - 0.0.0.0:8787
+      - --config
+      - /data/config.json
+    ports:
+      # Loopback-only by default. See docs/docker.md before exposing this.
+      - "${TWITCH_LIVE_BIND:-127.0.0.1}:8787:8787"
+    environment:
+      # Quiet hours use this timezone.
+      TZ: "${TZ:-UTC}"
+    volumes:
+      - twitch-live-data:/data
+    security_opt:
+      - no-new-privileges:true
+
+volumes:
+  twitch-live-data:

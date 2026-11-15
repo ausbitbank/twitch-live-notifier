@@ -48,6 +48,7 @@ posts where, and tune each message with placeholders and a live Discord preview.
 | **Windows 10/11 x64** | Browser at `127.0.0.1` | Tray app / Start with Windows | Yes |
 | **Linux x64** | Browser at `127.0.0.1` | `--serve` with systemd | No |
 | **macOS Intel / Apple Silicon** | Browser at `127.0.0.1` | `--serve` with launchd | No |
+| **Docker (amd64/arm64)** | Port `8787` | `restart: unless-stopped` | No |
 
 Any 64-bit desktop with a modern browser can run the dashboard. Other Go
 architectures can be built from source.
@@ -92,6 +93,21 @@ Then, on any platform:
    run a real check.
 5. Leave the app running. On Windows that means the tray; on Linux/macOS keep
    `--serve` running as a background service.
+
+### Docker (24/7 self-hosting)
+
+For a VPS, NAS, or Raspberry Pi, run the published multi-arch image:
+
+```bash
+git clone https://github.com/ausbitbank/twitch-live-notifier.git
+cd twitch-live-notifier
+docker compose up -d
+```
+
+The dashboard is on <http://127.0.0.1:8787/> by default and settings live in a
+persistent volume. The container includes a healthcheck against `/healthz`.
+See [docs/docker.md](docs/docker.md) for public-access warnings, SSH tunnels,
+updating, backups, ARM notes, and timezone setup for quiet hours.
 
 ### Creating a Discord webhook
 
@@ -168,6 +184,9 @@ blocked. If a streamer has no Discord ID, `{discord_mention}` falls back to plai
 - **Pause monitoring** stops automatic checks but still allows manual checks.
 - On Windows, **Start with Windows** launches the app quietly in the tray.
   Linux and macOS use systemd/launchd as described below.
+- `GET /healthz` reports whether the monitor is alive, with the last check time,
+  uptime, pause state, and counts. It returns HTTP 503 when checks are stale.
+  Docker uses this endpoint for its built-in healthcheck.
 
 ## Settings and privacy
 
@@ -263,6 +282,9 @@ TwitchLiveNotifier[.exe] --check
 
 TwitchLiveNotifier[.exe] --serve
     Linux/macOS: run the dashboard in the foreground. Open the printed URL.
+
+TwitchLiveNotifier[.exe] --healthcheck
+    Probe the local /healthz endpoint and exit. Used by Docker.
 ```
 
 Options:
@@ -270,6 +292,8 @@ Options:
 | Option | Description |
 | --- | --- |
 | `--config PATH` | Use a custom settings file. |
+| `--listen ADDR` | Dashboard listen address, e.g. `127.0.0.1:8787` or `0.0.0.0:8787`. |
+| `--healthcheck-url URL` | Health URL used by `--healthcheck`. |
 | `--version` | Print the version. |
 | `--help`, `-h` | Show help. |
 

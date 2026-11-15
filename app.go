@@ -61,6 +61,7 @@ type App struct {
 	activity        []Activity
 	checking        bool
 	lastCheck       time.Time
+	startedAt       time.Time
 	wake            chan struct{}
 	ctx             context.Context
 	cancel          context.CancelFunc
@@ -78,6 +79,7 @@ func NewApp(configPath string) (*App, error) {
 		cfg:             cfg,
 		configPath:      configPath,
 		statuses:        make(map[string]ChannelStatus),
+		startedAt:       time.Now(),
 		wake:            make(chan struct{}, 1),
 		enableAutoCheck: true,
 	}

@@ -25,28 +25,53 @@ type dashboardServer struct {
 	app    *App
 	server *http.Server
 	port   int
+	host   string
 }
 
-func startDashboard(app *App, onQuit func()) (*dashboardServer, error) {
+// startDashboard starts the local HTTP server. An empty listen address keeps
+// the historical loopback default and port fallback. An explicit address (for
+// example 0.0.0.0:8787 in Docker) is bound exactly and fails loudly if busy.
+func startDashboard(app *App, onQuit func(), listen string) (*dashboardServer, error) {
 	handler := withSecurity(newDashboardHandler(app, onQuit))
 	var (
 		listener net.Listener
 		err      error
 	)
-	for port := 8787; port <= 8799; port++ {
-		listener, err = net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
-		if err == nil {
-			break
+	listen = strings.TrimSpace(listen)
+	if listen == "" {
+		for port := 8787; port <= 8799; port++ {
+			listener, err = net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
+			if err == nil {
+				break
+			}
 		}
-	}
-	if listener == nil {
-		listener, err = net.Listen("tcp", "127.0.0.1:0")
+		if listener == nil {
+			listener, err = net.Listen("tcp", "127.0.0.1:0")
+			if err != nil {
+				return nil, fmt.Errorf("could not start the local dashboard: %w", err)
+			}
+		}
+	} else {
+		address := listen
+		if _, _, splitErr := net.SplitHostPort(address); splitErr != nil {
+			if port, portErr := strconv.Atoi(strings.TrimPrefix(address, ":")); portErr == nil {
+				address = fmt.Sprintf("127.0.0.1:%d", port)
+			} else {
+				return nil, fmt.Errorf("invalid --listen address %q: use host:port, for example 127.0.0.1:8787 or 0.0.0.0:8787", listen)
+			}
+		}
+		listener, err = net.Listen("tcp", address)
 		if err != nil {
-			return nil, fmt.Errorf("could not start the local dashboard: %w", err)
+			return nil, fmt.Errorf("could not listen on %s: %w", address, err)
 		}
 	}
 
-	port := listener.Addr().(*net.TCPAddr).Port
+	tcpAddress := listener.Addr().(*net.TCPAddr)
+	port := tcpAddress.Port
+	host := tcpAddress.IP.String()
+	if host == "" || host == "::" || host == "0.0.0.0" {
+		host = "127.0.0.1"
+	}
 	server := &http.Server{
 		Handler:           handler,
 		ReadHeaderTimeout: 10 * time.Second,
@@ -54,18 +79,18 @@ func startDashboard(app *App, onQuit func()) (*dashboardServer, error) {
 	go func() {
 		_ = server.Serve(listener)
 	}()
-	return &dashboardServer{app: app, server: server, port: port}, nil
+	return &dashboardServer{app: app, server: server, port: port, host: host}, nil
 }
 
 func (s *dashboardServer) URL() string {
-	return fmt.Sprintf("http://127.0.0.1:%d/", s.port)
+	return fmt.Sprintf("http://%s/", net.JoinHostPort(s.host, strconv.Itoa(s.port)))
 }
 
 func (s *dashboardServer) Shutdown(ctx context.Context) {
 	_ = s.server.Shutdown(ctx)
 }
 
-func runServerOnly(configPath string) int {
+func runServerOnly(configPath, listen string) int {
 	prepareConsole()
 	app, err := NewApp(configPath)
 	if err != nil {
@@ -81,13 +106,16 @@ func runServerOnly(configPath string) int {
 		case quit <- struct{}{}:
 		default:
 		}
-	})
+	}, listen)
 	if err != nil {
 		return cliError(err)
 	}
 	portFile := serverPortPath(configPath)
 	_ = writePortFile(portFile, dashboard.port)
+	fmt.Printf("%s v%s\n", appName, Version)
+	fmt.Println("Config:", configPath)
 	fmt.Println("Dashboard:", dashboard.URL())
+	fmt.Println("Health:", dashboard.URL()+"healthz")
 	fmt.Println("Press Ctrl+C to stop.")
 
 	signals, stopSignals := signal.NotifyContext(context.Background(), os.Interrupt)
@@ -123,6 +151,15 @@ func newDashboardHandler(app *App, onQuit func()) http.Handler {
 
 	mux.HandleFunc("GET /api/state", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, app.State())
+	})
+
+	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
+		health := app.Health()
+		code := http.StatusOK
+		if health.Status != healthStatusHealthy {
+			code = http.StatusServiceUnavailable
+		}
+		writeJSON(w, code, health)
 	})
 
 	mux.HandleFunc("POST /api/channels", func(w http.ResponseWriter, r *http.Request) {
