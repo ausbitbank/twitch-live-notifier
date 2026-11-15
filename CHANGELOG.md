@@ -1,5 +1,13 @@
 # Changelog
 
+## 2.1.0 - 2026-11-15
+
+- Added an optional Discord user ID to each streamer.
+- Added the `{discord_mention}` template placeholder.
+- Discord payloads now allow only the configured streamer mention while still
+  blocking `@everyone` and role mentions.
+- Added a Discord ping editor and preview guidance on the Streamers page.
+
 ## 2.0.0 - 2026-11-15
 
 - New dark dashboard hosted by the app and opened in the browser.

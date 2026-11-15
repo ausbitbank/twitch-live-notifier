@@ -26,6 +26,7 @@ type Channel struct {
 	DisplayName  string        `json:"display_name"`
 	AvatarURL    string        `json:"avatar_url,omitempty"`
 	BannerURL    string        `json:"banner_url,omitempty"`
+	DiscordID    string        `json:"discord_id,omitempty"`
 	Enabled      bool          `json:"enabled"`
 	Destinations []Destination `json:"destinations"`
 }
@@ -67,6 +68,9 @@ type Settings struct {
 var (
 	twitchLoginPattern  = regexp.MustCompile(`^[A-Za-z0-9_]{1,25}$`)
 	webhookTokenPattern = regexp.MustCompile(`^[A-Za-z0-9._-]{10,}$`)
+	discordIDPattern    = regexp.MustCompile(`^\d{17,20}$`)
+	discordMentionRE    = regexp.MustCompile(`^<@!?(\d{17,20})>$`)
+	discordUserURLRE    = regexp.MustCompile(`(?i)^https?://(?:www\.)?discord(?:app)?\.com/users/(\d{17,20})/?$`)
 	discordWebhookHosts = map[string]bool{
 		"discord.com":        true,
 		"discordapp.com":     true,
@@ -246,6 +250,13 @@ func normalizeConfig(cfg *Config) {
 		if channel.DisplayName == "" {
 			channel.DisplayName = channel.Login
 		}
+		if channel.DiscordID != "" {
+			if id, err := normalizeDiscordID(channel.DiscordID); err == nil {
+				channel.DiscordID = id
+			} else {
+				channel.DiscordID = ""
+			}
+		}
 		seen := make(map[string]bool, len(channel.Destinations))
 		destinations := make([]Destination, 0, len(channel.Destinations))
 		for _, destination := range channel.Destinations {
@@ -304,6 +315,22 @@ func newID() string {
 		return fmt.Sprintf("%d", os.Getpid())
 	}
 	return hex.EncodeToString(bytes[:])
+}
+
+func normalizeDiscordID(input string) (string, error) {
+	value := strings.TrimSpace(input)
+	if value == "" {
+		return "", nil
+	}
+	if match := discordMentionRE.FindStringSubmatch(value); match != nil {
+		value = match[1]
+	} else if match := discordUserURLRE.FindStringSubmatch(value); match != nil {
+		value = match[1]
+	}
+	if !discordIDPattern.MatchString(value) {
+		return "", errors.New("Discord user IDs are 17–20 digit numbers; paste the ID or profile URL")
+	}
+	return value, nil
 }
 
 func normalizeTwitchLogin(input string) (string, error) {

@@ -287,6 +287,7 @@ func (a *App) checkChannel(channel Channel, webhooks []Webhook) (int, error) {
 	}
 
 	info := streamInfoFromTwitch(user, true)
+	info.DiscordID = channel.DiscordID
 	posted := 0
 	var postErrors []string
 	for _, destination := range channel.Destinations {
@@ -487,6 +488,37 @@ func (a *App) SetChannelEnabled(id string, enabled bool) error {
 	a.addActivity("info", message)
 	if enabled && a.enableAutoCheck {
 		a.TriggerCheck()
+	}
+	return nil
+}
+
+func (a *App) SetChannelDiscordID(id, rawDiscordID string) error {
+	discordID, err := normalizeDiscordID(rawDiscordID)
+	if err != nil {
+		return err
+	}
+
+	a.mu.Lock()
+	index := a.channelIndexLocked(id)
+	if index < 0 {
+		a.mu.Unlock()
+		return errors.New("streamer not found")
+	}
+	if a.cfg.Channels[index].DiscordID == discordID {
+		a.mu.Unlock()
+		return nil
+	}
+	a.cfg.Channels[index].DiscordID = discordID
+	name := a.cfg.Channels[index].DisplayName
+	err = a.persistLocked()
+	a.mu.Unlock()
+	if err != nil {
+		return err
+	}
+	if discordID == "" {
+		a.addActivity("info", "Removed Discord ping for "+name+".")
+	} else {
+		a.addActivity("info", "Updated Discord ping for "+name+".")
 	}
 	return nil
 }
@@ -723,6 +755,7 @@ func (a *App) SendSample(channelID string, webhookIDs []string) (int, error) {
 		return 0, errors.New("this streamer has no previous stream to use as a sample")
 	}
 	info := streamInfoFromTwitch(user, false)
+	info.DiscordID = channel.DiscordID
 	now := time.Now()
 	count := 0
 	for _, webhookID := range webhookIDs {
@@ -779,6 +812,7 @@ func (a *App) previewInfo(channelID string) StreamInfo {
 		Streamer:  channel.DisplayName,
 		URL:       "https://www.twitch.tv/" + channel.Login,
 		AvatarURL: channel.AvatarURL,
+		DiscordID: channel.DiscordID,
 		Live:      status.Live,
 	}
 	switch {

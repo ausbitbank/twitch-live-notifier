@@ -180,3 +180,36 @@ func TestCloneConfigDoesNotShareSlices(t *testing.T) {
 		t.Fatal("cloneConfig shared destination storage")
 	}
 }
+
+func TestNormalizeDiscordID(t *testing.T) {
+	const id = "123456789012345678"
+	tests := []struct {
+		input string
+		want  string
+		ok    bool
+	}{
+		{id, id, true},
+		{"<@" + id + ">", id, true},
+		{"<@!" + id + ">", id, true},
+		{"https://discord.com/users/" + id, id, true},
+		{"https://discordapp.com/users/" + id + "/", id, true},
+		{"", "", true},
+		{"@somebody", "", false},
+		{"123", "", false},
+		{"<@123>", "", false},
+	}
+	for _, test := range tests {
+		got, err := normalizeDiscordID(test.input)
+		if test.ok && err != nil {
+			t.Errorf("normalizeDiscordID(%q) returned error: %v", test.input, err)
+			continue
+		}
+		if !test.ok && err == nil {
+			t.Errorf("normalizeDiscordID(%q) = %q, want an error", test.input, got)
+			continue
+		}
+		if got != test.want {
+			t.Errorf("normalizeDiscordID(%q) = %q, want %q", test.input, got, test.want)
+		}
+	}
+}

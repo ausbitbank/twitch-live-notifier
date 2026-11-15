@@ -18,7 +18,9 @@ type discordWebhookPayload struct {
 }
 
 type discordAllowedMentions struct {
-	Parse []string `json:"parse"`
+	Parse []string `json:"parse,omitempty"`
+	Roles []string `json:"roles,omitempty"`
+	Users []string `json:"users,omitempty"`
 }
 
 type discordEmbed struct {

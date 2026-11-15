@@ -1543,6 +1543,24 @@ svg {
   color: #00a8fc;
 }
 
+.discord-mention {
+  display: inline;
+  padding: 0 2px;
+  border-radius: 3px;
+  background: rgba(88, 101, 242, 0.30);
+  color: #c9cdfb;
+}
+
+.discord-id {
+  padding: 2px 6px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.03);
+  color: var(--muted);
+  font-family: "Cascadia Code", "Consolas", monospace;
+  font-size: 10px;
+}
+
 .discord-embed {
   display: grid;
   gap: 8px;

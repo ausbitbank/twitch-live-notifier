@@ -370,3 +370,31 @@ func TestCheckChannelNow(t *testing.T) {
 		t.Fatalf("Discord calls = %d", capture.count())
 	}
 }
+
+func TestSetChannelDiscordID(t *testing.T) {
+	app := newTestApp(t)
+	const channelID = "channel1"
+	const discordID = "123456789012345678"
+	app.mu.Lock()
+	app.cfg.Channels = []Channel{{
+		ID: channelID, Login: "teststreamer", DisplayName: "TestStreamer", Enabled: true,
+	}}
+	app.mu.Unlock()
+
+	if err := app.SetChannelDiscordID(channelID, "<@"+discordID+">"); err != nil {
+		t.Fatalf("SetChannelDiscordID returned error: %v", err)
+	}
+	cfg := app.ConfigSnapshot()
+	if cfg.Channels[0].DiscordID != discordID {
+		t.Fatalf("discord id = %q", cfg.Channels[0].DiscordID)
+	}
+	if err := app.SetChannelDiscordID(channelID, "@not-an-id"); err == nil {
+		t.Fatal("invalid Discord ID accepted")
+	}
+	if err := app.SetChannelDiscordID(channelID, ""); err != nil {
+		t.Fatalf("clearing Discord ID returned error: %v", err)
+	}
+	if app.ConfigSnapshot().Channels[0].DiscordID != "" {
+		t.Fatal("Discord ID was not cleared")
+	}
+}

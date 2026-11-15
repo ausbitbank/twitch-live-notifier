@@ -146,14 +146,27 @@ func newDashboardHandler(app *App, onQuit func()) http.Handler {
 			return
 		}
 		var request struct {
-			Enabled bool `json:"enabled"`
+			Enabled   *bool   `json:"enabled"`
+			DiscordID *string `json:"discord_id"`
 		}
 		if !decodeJSON(w, r, &request) {
 			return
 		}
-		if err := app.SetChannelEnabled(r.PathValue("id"), request.Enabled); err != nil {
-			writeAPIError(w, http.StatusBadRequest, err)
+		if request.Enabled == nil && request.DiscordID == nil {
+			writeAPIError(w, http.StatusBadRequest, errors.New("no changes supplied"))
 			return
+		}
+		if request.Enabled != nil {
+			if err := app.SetChannelEnabled(r.PathValue("id"), *request.Enabled); err != nil {
+				writeAPIError(w, http.StatusBadRequest, err)
+				return
+			}
+		}
+		if request.DiscordID != nil {
+			if err := app.SetChannelDiscordID(r.PathValue("id"), *request.DiscordID); err != nil {
+				writeAPIError(w, http.StatusBadRequest, err)
+				return
+			}
 		}
 		writeJSON(w, http.StatusOK, app.State())
 	})

@@ -21,7 +21,7 @@ fi
 	--in winres/winres.json \
 	--arch amd64 \
 	--out rsrc \
-	--product-version "${VERSION:-2.0.0}" \
-	--file-version "${VERSION:-2.0.0}"
+	--product-version "${VERSION:-2.1.0}" \
+	--file-version "${VERSION:-2.1.0}"
 
 echo "Regenerated app icon, web artwork, and rsrc_windows_amd64.syso"

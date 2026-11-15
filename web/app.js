@@ -524,6 +524,13 @@
             <div class="field-label" style="margin-bottom:7px">Post to</div>
             ${destinationControls}
           </div>
+          <div>
+            <div class="field-label" style="margin-bottom:7px">Discord ping</div>
+            <div class="meta" style="display:flex;align-items:center;gap:9px;flex-wrap:wrap">
+              ${channel.discord_id ? `<code class="discord-id">${escapeHTML(channel.discord_id)}</code>` : "<span>Not set</span>"}
+              <button class="btn btn-small btn-ghost" data-action="edit-discord-id" data-channel="${channel.id}">${icon("edit")} ${channel.discord_id ? "Edit" : "Add"}</button>
+            </div>
+          </div>
           <div class="meta">Last checked ${escapeHTML(formatRelative(status.last_checked))}</div>
         </div>
       </article>`;
@@ -942,8 +949,14 @@
       const warning = $("#preview-warning");
       const unknown = data.unknown_placeholders || [];
       const empty = !template.content.trim() && !template.embed_title.trim() && !template.embed_description.trim();
+      const previewChannel = channelById(channelId);
+      const usesDiscordMention = [template.content, template.embed_title, template.embed_description, template.footer]
+        .some((value) => String(value).includes("{discord_mention}"));
+      const missingDiscordID = usesDiscordMention && channelId && previewChannel && !previewChannel.discord_id;
       if (unknown.length) {
         warning.innerHTML = `<div class="warning-box" style="margin-top:10px">${icon("bell")} Unknown placeholder${unknown.length === 1 ? "" : "s"}: ${escapeHTML(unknown.join(", "))}</div>`;
+      } else if (missingDiscordID) {
+        warning.innerHTML = `<div class="warning-box" style="margin-top:10px">${icon("bell")} This streamer has no Discord user ID yet. Add one under Streamers, or {discord_mention} will render as plain @text.</div>`;
       } else if (empty) {
         warning.innerHTML = `<div class="warning-box" style="margin-top:10px">${icon("bell")} Nothing will be posted. Add message content or embed text.</div>`;
       } else {
@@ -1014,10 +1027,39 @@
     text = text.replace(/\*([^*]+)\*/g, "<em>$1</em>");
     text = text.replace(/\[([^\]]+)\]\((https?:\/\/[^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
     text = text.replace(/&lt;t:(\d+):([RrFfDdTt])&gt;/g, (_, unix, style) => formatDiscordTimestamp(unix, style));
+    text = text.replace(/&lt;@!?(\d+)&gt;/g, '<span class="discord-mention">@mention</span>');
     return text.replace(/\n/g, "<br>");
   }
 
-  function openSampleModal(channelId) {
+  function openDiscordIDModal(channelId) {
+    const channel = channelById(channelId);
+    if (!channel) {
+      return;
+    }
+    openModal(`
+      <div class="modal-head">
+        <div><h2>Discord ping</h2><p>Optional. Associate ${escapeHTML(channel.display_name || channel.login)} with a Discord user ID.</p></div>
+        <button class="modal-close" data-action="close-modal" aria-label="Close">${icon("x")}</button>
+      </div>
+      <form id="discord-id-form" data-channel-id="${channel.id}">
+        <div class="modal-body">
+          <label class="field">
+            <span class="field-label">Discord user ID</span>
+            <input id="discord-user-id" class="input input-mono" value="${escapeHTML(channel.discord_id || "")}" placeholder="123456789012345678" autocomplete="off" spellcheck="false">
+            <span class="field-hint">17–20 digit Discord user ID. A profile URL or &lt;@mention&gt; also works. Leave blank to remove the ping.</span>
+          </label>
+          <div class="warning-box" style="margin-top:14px">${icon("bell")}<span>Enable Developer Mode in Discord, right-click the streamer, and choose <strong>Copy User ID</strong>. Then put <code>{discord_mention}</code> in the message content of any destination template.</span></div>
+          <p class="field-hint" style="margin:12px 0 0">Only this user’s mention is allowed. <code>@everyone</code> and role mentions remain blocked.</p>
+        </div>
+        <div class="modal-foot">
+          <button type="button" class="btn btn-ghost" data-action="universal-close">Cancel</button>
+          <button type="submit" class="btn btn-primary">${icon("check")} Save ping</button>
+        </div>
+      </form>
+    `, { narrow: true });
+  }
+
+function openSampleModal(channelId) {
     const channel = channelById(channelId);
     if (!channel) {
       return;
@@ -1231,6 +1273,9 @@
         }
         break;
       }
+      case "edit-discord-id":
+        openDiscordIDModal(actionElement.dataset.channel);
+        break;
       case "sample-channel":
         openSampleModal(actionElement.dataset.channel);
         break;
@@ -1281,6 +1326,30 @@
   }
 
   async function handleSubmit(event) {
+    if (event.target.id === "discord-id-form") {
+      event.preventDefault();
+      const form = event.target;
+      const channelId = form.dataset.channelId;
+      const input = $("#discord-user-id");
+      const button = $("button[type=submit]", form);
+      button.disabled = true;
+      button.innerHTML = '<span class="spinner"></span> Saving…';
+      try {
+        state = await api(`/api/channels/${channelId}`, {
+          method: "PUT",
+          body: { discord_id: input.value.trim() },
+        });
+        closeModal();
+        render();
+        toast(input.value.trim() ? "Discord ping saved." : "Discord ping removed.", "success");
+      } catch (error) {
+        toast(error.message, "error");
+        button.disabled = false;
+        button.innerHTML = `${icon("check")} Save ping`;
+      }
+      return;
+    }
+
     if (event.target.id === "add-streamer-form") {
       event.preventDefault();
       const form = event.target;

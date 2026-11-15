@@ -19,6 +19,7 @@ type StreamInfo struct {
 	URL       string
 	Thumbnail string
 	AvatarURL string
+	DiscordID string
 	Viewers   int
 	StartedAt time.Time
 	Live      bool
@@ -42,6 +43,7 @@ var templatePlaceholders = []Placeholder{
 	{"{live_for}", "How long the stream has been live"},
 	{"{webhook}", "Destination label"},
 	{"{channel}", "Twitch login name"},
+	{"{discord_mention}", "Optional ping for the streamer's Discord user ID"},
 }
 
 func normalizeTemplate(t Template) Template {
@@ -108,6 +110,10 @@ func renderTemplate(text string, info StreamInfo, webhookLabel string, now time.
 	if info.Live {
 		viewers = formatCount(info.Viewers)
 	}
+	discordMention := "@" + info.Streamer
+	if id, err := normalizeDiscordID(info.DiscordID); err == nil && id != "" {
+		discordMention = "<@" + id + ">"
+	}
 
 	replacer := strings.NewReplacer(
 		"{streamer}", info.Streamer,
@@ -120,6 +126,7 @@ func renderTemplate(text string, info StreamInfo, webhookLabel string, now time.
 		"{live_for}", liveFor,
 		"{webhook}", webhookLabel,
 		"{channel}", info.Login,
+		"{discord_mention}", discordMention,
 	)
 	return replacer.Replace(text)
 }
@@ -209,10 +216,15 @@ func buildPayload(webhook Webhook, info StreamInfo, now time.Time, example bool)
 		embed.Footer = &discordFooter{Text: footer}
 	}
 
+	allowedMentions := &discordAllowedMentions{Parse: []string{}}
+	if id, err := normalizeDiscordID(info.DiscordID); err == nil && id != "" {
+		allowedMentions = &discordAllowedMentions{Users: []string{id}}
+	}
+
 	return discordWebhookPayload{
 		Content:         content,
 		Embeds:          []discordEmbed{embed},
-		AllowedMentions: &discordAllowedMentions{Parse: []string{}},
+		AllowedMentions: allowedMentions,
 	}
 }
 

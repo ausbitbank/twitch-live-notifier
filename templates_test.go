@@ -120,3 +120,40 @@ func TestFormatHelpers(t *testing.T) {
 		t.Errorf("formatDuration = %q", got)
 	}
 }
+
+func TestDiscordMentionTemplate(t *testing.T) {
+	info := testStreamInfo()
+	info.DiscordID = "123456789012345678"
+	text := "Hey {discord_mention}, you are live!"
+	if got := renderTemplate(text, info, "Community", time.Now()); !strings.Contains(got, "<@123456789012345678>") {
+		t.Fatalf("renderTemplate() = %q", got)
+	}
+	info.DiscordID = ""
+	if got := renderTemplate(text, info, "Community", time.Now()); !strings.Contains(got, "@TestStreamer") {
+		t.Fatalf("fallback mention = %q", got)
+	}
+}
+
+func TestDiscordMentionAllowedMentions(t *testing.T) {
+	info := testStreamInfo()
+	info.DiscordID = "123456789012345678"
+	template := defaultTemplate()
+	template.Content = "Hey {discord_mention}, you are live!"
+	webhook := Webhook{Label: "Community", Template: template}
+	payload := buildPayload(webhook, info, time.Now(), false)
+	if !strings.Contains(payload.Content, "<@123456789012345678>") {
+		t.Fatalf("content = %q", payload.Content)
+	}
+	if payload.AllowedMentions == nil || len(payload.AllowedMentions.Users) != 1 || payload.AllowedMentions.Users[0] != info.DiscordID {
+		t.Fatalf("allowed mentions = %+v", payload.AllowedMentions)
+	}
+	if len(payload.AllowedMentions.Parse) != 0 {
+		t.Fatalf("parse should be empty for an explicit user mention: %+v", payload.AllowedMentions)
+	}
+
+	info.DiscordID = ""
+	payload = buildPayload(webhook, info, time.Now(), false)
+	if payload.AllowedMentions == nil || len(payload.AllowedMentions.Parse) != 0 || len(payload.AllowedMentions.Users) != 0 {
+		t.Fatalf("no-ID allowed mentions = %+v", payload.AllowedMentions)
+	}
+}

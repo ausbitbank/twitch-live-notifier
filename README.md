@@ -35,8 +35,11 @@ posts where, and tune each message with placeholders and a live Discord preview.
 - **Dark by default.** A polished dashboard with a light-mode toggle.
 - **Once per stream, per destination.** Restarting the app does not repost the
   same stream. A new stream triggers a new alert.
-- **No pings.** Discord mentions are disabled so a stream title cannot
-  accidentally `@everyone`.
+- **Optional streamer pings.** Associate a streamer with their Discord user ID
+  and use `{discord_mention}` in a destination template. `@everyone` and role
+  mentions stay blocked.
+- **No accidental pings.** Only the streamer you explicitly configure can be
+  mentioned, so a stream title cannot accidentally ping the whole server.
 
 ## Runs on
 
@@ -129,12 +132,31 @@ preview using real channel data when available.
 | `{live_for}` | How long the stream has been live, or `Ended` for a sample |
 | `{webhook}` | Destination label |
 | `{channel}` | Twitch login name |
+| `{discord_mention}` | The streamer's Discord ping, or `@DisplayName` if no ID is set |
 
 You can also toggle the author, preview image, game field, viewers field, and
 live-time field, and choose the embed colour. Unknown placeholders are flagged
 in the preview so typos are easy to spot.
 
 ![Destination editor with live Discord preview](docs/dashboard-editor.png)
+
+## Optional Discord pings
+
+Each streamer can have an optional Discord user ID. When configured, the
+`{discord_mention}` placeholder becomes a real `<@user>` mention that pings the
+streamer in Discord.
+
+1. In Discord, open **Settings → Advanced** and enable **Developer Mode**.
+2. Right-click the streamer's name and choose **Copy User ID**.
+3. In the app, open **Streamers**, click **Add** next to **Discord ping**, and
+   paste the ID.
+4. Add `{discord_mention}` to the **message content** of a destination template.
+
+Only that one user mention is allowed. `@everyone` and role mentions remain
+blocked. If a streamer has no Discord ID, `{discord_mention}` falls back to plain
+`@DisplayName` text and does not ping anyone.
+
+![Discord ping settings](docs/discord-ping.png)
 
 ## Monitoring
 
