@@ -66,6 +66,10 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: |
+            dist/TwitchLiveNotifier.exe
+            dist/TwitchLiveNotifier-linux-amd64
+            dist/TwitchLiveNotifier-macos-amd64
+            dist/TwitchLiveNotifier-macos-arm64
             dist/TwitchLiveNotifier-${{ github.ref_name }}-Windows-x64.zip
             dist/TwitchLiveNotifier-${{ github.ref_name }}-Linux-x64.tar.gz
             dist/TwitchLiveNotifier-${{ github.ref_name }}-macOS.tar.gz
