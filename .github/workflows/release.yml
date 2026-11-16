@@ -102,7 +102,7 @@ jobs:
           curl -fsSL -o dist/source.tar.gz \
             "https://github.com/${GITHUB_REPOSITORY}/archive/refs/tags/${GITHUB_REF_NAME}.tar.gz"
           ./packaging/homebrew/render.sh "$version" dist/source.tar.gz dist/homebrew/twitch-live-notifier.rb
-          (cd dist && sha256sum homebrew/twitch-live-notifier.rb >> SHA256SUMS.txt)
+          (cd dist/homebrew && sha256sum twitch-live-notifier.rb >> ../SHA256SUMS.txt)
 
       - name: Publish release
         uses: softprops/action-gh-release@v2
