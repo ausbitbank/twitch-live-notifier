@@ -10,7 +10,8 @@ context.
 - **Current version:** 2.3.0
 - **Current release:** <https://github.com/ausbitbank/twitch-live-notifier/releases/tag/v2.3.0>
 - **Unreleased on main:** packaging (Windows installer, macOS `.app`, Linux
-  `.deb`/AppImage, winget) and the GitHub update check.
+  `.deb`/AppImage, winget), the GitHub update check, and Discord rate-limit
+  hardening (persisted retry windows, proactive headers, check timeout).
 - **Branch:** `main`
 - **License:** MIT
 
