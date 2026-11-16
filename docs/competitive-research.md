@@ -1,8 +1,8 @@
 # Competitive research: Twitch → Discord alerts
 
-**Research date:** 2026-11-15  
-**Product version reviewed:** 2.3.0  
-**Scope:** Twitch live alerts for Discord communities, not general-purpose Discord bots.
+- **Research date:** 2026-11-15
+- **Product version reviewed:** 2.4.0
+- **Scope:** Twitch live alerts for Discord communities, not general-purpose Discord bots.
 
 ## Method
 
@@ -176,13 +176,13 @@ buttons, redacted backups, and encrypted webhook URLs.
 
 A public utility needs lower-friction installation and updates:
 
-- ~~Windows installer and winget manifests.~~ Implemented on `main`; signing is
+- ~~Windows installer and winget manifests.~~ Delivered in 2.4.0; signing is
   optional through repository secrets.
-- ~~macOS `.app` wrapper.~~ Implemented on `main`; signing/notarization are
+- ~~macOS `.app` wrapper.~~ Delivered in 2.4.0; signing/notarization are
   optional through repository secrets.
-- ~~Linux AppImage/deb.~~ Implemented on `main`.
-- ~~Auto-update check from GitHub releases.~~ Implemented on `main` as a status
-  check plus download link; silent self-replacement waits for signed artifacts.
+- ~~Linux AppImage/deb.~~ Delivered in 2.4.0.
+- ~~Auto-update check from GitHub releases.~~ Delivered in 2.4.0 as a status check
+  plus download link; silent self-replacement waits for signed artifacts.
 - ~~Encrypt webhook URLs with DPAPI/Keychain/libsecret.~~ Delivered in 2.3.0.
 - ~~Optional local dashboard PIN/token for local-network access.~~ Delivered in
   2.3.0.

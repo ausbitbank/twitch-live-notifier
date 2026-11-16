@@ -122,7 +122,7 @@ Settings are not touched by an update. The previous image remains available for
 rollback by pinning a tag:
 
 ```yaml
-image: ghcr.io/ausbitbank/twitch-live-notifier:v2.3.0
+image: ghcr.io/ausbitbank/twitch-live-notifier:v2.4.0
 ```
 
 ## Timezone and quiet hours
@@ -157,7 +157,7 @@ The default is `UTC`. The image includes `tzdata`.
 ```json
 {
   "status": "healthy",
-  "version": "2.3.0",
+  "version": "2.4.0",
   "uptime_seconds": 3600,
   "monitoring": true,
   "paused": false,

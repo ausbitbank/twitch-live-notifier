@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 2.4.0 - 2026-11-16
 
 ### Packaging
 
@@ -34,8 +34,6 @@
 - Added a 15-minute hard timeout for scheduled and manual checks.
 - Destination cards and streamer routing rows show when a webhook is rate
   limited.
-
-### Packaging
 
 ## 2.3.0 - 2026-11-16
 

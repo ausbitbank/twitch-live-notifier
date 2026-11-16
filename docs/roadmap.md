@@ -1,18 +1,18 @@
 # Roadmap
 
-- **Latest release:** 2.3.0
-- **Development baseline:** `main` after v2.3.0
+- **Latest release:** 2.4.0
+- **Development baseline:** `main` after v2.4.0
 - **Research input:** [competitive-research.md](competitive-research.md)
 
 ## Current status
 
 | | |
 | --- | --- |
-| Latest published release | [v2.3.0](https://github.com/ausbitbank/twitch-live-notifier/releases/tag/v2.3.0) |
-| `main` branch | v2.4 packaging/signing/update work plus rate-limit hardening; CI green |
-| Next release | v2.4.0 (packaging, signing hooks, update status) |
-| Active focus | Free OSS signing application, signed installers, release verification |
-| Recently merged | Persisted Discord rate-limit windows, proactive rate-limit headers, check timeout |
+| Latest published release | [v2.4.0](https://github.com/ausbitbank/twitch-live-notifier/releases/tag/v2.4.0) |
+| `main` branch | Post-v2.4.0; CI green |
+| Next release | v2.5.0 / future focus |
+| Active focus | Free OSS signing application, signed installers, v2.5 planning |
+| Shipped in v2.4.0 | Installers/packages, update check, rate-limit hardening |
 
 ## Product principles
 
@@ -249,13 +249,12 @@ downloaded binary.
 
 ### P1: Installer, signing, and auto-update
 
-**Mostly implemented on `main`; release pending.** Installers, packages, update
-checks, and optional signing hooks are in place. Silent self-replacing
-auto-update remains future work until signed artifacts and signature
-verification are available. Windows signing can use a free SignPath
-Foundation/OSSign OSS application or a paid/cloud certificate. macOS Developer
-ID signing requires a paid Apple Developer Program membership; a free
-Homebrew/source-build path is included.
+**Shipped in 2.4.0.** Installers, packages, update checks, and optional signing
+hooks are in place. Silent self-replacing auto-update remains future work until
+signed artifacts and signature verification are available. Windows signing can
+use a free SignPath Foundation/OSSign OSS application or a paid/cloud
+certificate. macOS Developer ID signing requires a paid Apple Developer Program
+membership; a free Homebrew/source-build path is included.
 
 Deliverables:
 

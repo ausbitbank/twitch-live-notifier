@@ -48,10 +48,9 @@
 > with Docker.
 
 > [!NOTE]
-> **Downloads:** The buttons open the latest published release. If you do not see
-> an installer or package there yet, use the portable ZIP/archive or build from
-> source; packaging improvements on `main` are attached when the next version is
-> tagged.
+> **Downloads:** The buttons open the latest published release. The Windows
+> installer, portable ZIP, Linux packages, macOS app bundles, and Docker image
+> are attached to each release.
 
 ## Why this exists
 
@@ -116,10 +115,10 @@ Choose the option that matches your computer:
 
 | Platform | Easiest option | Also works |
 | --- | --- | --- |
-| **Windows 10/11 64-bit** | Windows installer (when listed) | Portable ZIP |
-| **Ubuntu / Debian** | `.deb` package (when listed) | Linux `.tar.gz` |
-| **Other Linux** | AppImage (when listed) | Linux `.tar.gz` |
-| **macOS Intel / Apple Silicon** | `.app` bundle in the macOS archive (when present) | Raw binary with `--serve` |
+| **Windows 10/11 64-bit** | Windows installer | Portable ZIP |
+| **Ubuntu / Debian** | `.deb` package | Linux `.tar.gz` |
+| **Other Linux** | AppImage | Linux `.tar.gz` |
+| **macOS Intel / Apple Silicon** | `.app` bundle in the macOS archive | Raw binary with `--serve` |
 | **VPS / NAS / Raspberry Pi** | Docker image | Linux binary + systemd |
 
 Portable options do not need an installer:
@@ -128,10 +127,9 @@ Portable options do not need an installer:
   dashboard and keeps running in the tray.
 - **Linux archive:** extract it and run
   `./TwitchLiveNotifier-linux-amd64 --serve`. Open the URL it prints.
-- **macOS archive:** open `Twitch Live to Discord.app` if it is present, or run
-  the raw binary with `--serve`. If Gatekeeper blocks an unsigned download,
-  right-click → **Open**, or build from source with the included Homebrew
-  formula.
+- **macOS archive:** open `Twitch Live to Discord.app`, or run the raw binary
+  with `--serve`. If Gatekeeper blocks an unsigned download, right-click →
+  **Open**, or build from source with the included Homebrew formula.
 - **Docker:** run `docker compose up -d` from a checkout. See
   [Docker and self-hosting](docs/docker.md).
 
@@ -260,19 +258,18 @@ minimum is 30 seconds. Very short streams can still be missed by polling.
 | | |
 | --- | --- |
 | **Latest published release** | [GitHub Releases](https://github.com/ausbitbank/twitch-live-notifier/releases/latest) — the release badge above shows the current tag |
-| **`main` branch** | Packaging, signing hooks, in-app update status, and rate-limit hardening; CI is green |
-| **Next release** | Packaging and update focus (Windows installer, macOS `.app`, Linux `.deb`/AppImage, winget, update status) |
+| **`main` branch** | Post-v2.4.0; CI is green |
+| **Next release** | v2.5.0 / future focus |
 | **Roadmap** | [docs/roadmap.md](docs/roadmap.md) |
 | **Changelog** | [CHANGELOG.md](CHANGELOG.md) |
 
 The latest release includes the stream lifecycle, per-route templates, secret
-storage, and scoped mention controls. Work on `main` adds installers/packages,
-the GitHub release update check, and the hardened Discord rate-limit handling;
-those are attached to the next tagged release.
+storage, scoped mention controls, installers and packages, the GitHub release
+update check, and hardened Discord rate-limit handling.
 
 ## Feature list
 
-Features are in the latest release unless marked **next release**.
+Features are in the latest release.
 
 ### Setup and routing
 
@@ -338,14 +335,13 @@ Features are in the latest release unless marked **next release**.
 - Per-stream, per-destination dedupe that survives restarts.
 - Bounded Twitch retries with jittered exponential backoff.
 - Discord `429` handling with short inline retries and persisted per-destination
-  retry windows (**next release**).
-- Proactive Discord `X-RateLimit-*` handling and jittered fallback delays
-  (**next release**).
+  retry windows.
+- Proactive Discord `X-RateLimit-*` handling and jittered fallback delays.
 - `401`/`403`/`404` destinations are marked invalid and skipped until repaired.
 - Per-destination last success, last error, failure count, and invalid state.
 - Cross-platform single-instance locking.
 - `/healthz` with liveness, last-check age, uptime, pause state, and counts.
-- 15-minute check timeout for scheduled and manual checks (**next release**).
+- 15-minute check timeout for scheduled and manual checks.
 
 ### Privacy and configuration
 
@@ -357,17 +353,17 @@ Features are in the latest release unless marked **next release**.
   from Settings.
 - Optional dashboard token for API access when the dashboard is exposed beyond
   loopback.
-- Optional update check that reports the latest GitHub release
-  (**next release**); no silent self-replacing updater.
+- Optional update check that reports the latest GitHub release; no silent
+  self-replacing updater.
 
 ### Platforms and packaging
 
 - Windows tray app with optional start-at-login.
 - Linux/macOS dashboard mode with `--serve`.
-- Windows installer (**next release**) and portable ZIP.
-- macOS Intel and Apple Silicon `.app` bundles (**next release**).
-- Linux `.deb` and AppImage packages (**next release**).
-- winget manifests in the release assets (**next release**).
+- Windows installer and portable ZIP.
+- macOS Intel and Apple Silicon `.app` bundles.
+- Linux `.deb` and AppImage packages.
+- winget manifests in the release assets.
 - Multi-arch Docker images for `linux/amd64` and `linux/arm64`.
 - Docker healthcheck and persistent config volume.
 

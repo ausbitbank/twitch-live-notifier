@@ -7,11 +7,10 @@ context.
 
 - **Local path:** `/mnt/arty/twitch-live-notifier`
 - **GitHub:** <https://github.com/ausbitbank/twitch-live-notifier>
-- **Current version:** 2.3.0
-- **Current release:** <https://github.com/ausbitbank/twitch-live-notifier/releases/tag/v2.3.0>
-- **Unreleased on main:** packaging (Windows installer, macOS `.app`, Linux
-  `.deb`/AppImage, winget), the GitHub update check, and Discord rate-limit
-  hardening (persisted retry windows, proactive headers, check timeout).
+- **Current version:** 2.4.0
+- **Current release:** <https://github.com/ausbitbank/twitch-live-notifier/releases/tag/v2.4.0>
+- **Next focus:** free OSS signing application (SignPath Foundation/OSSign),
+  signed installers, and v2.5 planning.
 - **Branch:** `main`
 - **License:** MIT
 
@@ -245,8 +244,7 @@ TwitchLiveNotifier.exe --healthcheck
     on a Windows runner,
   - optionally signs/notarizes macOS artifacts when secrets are configured,
   - builds and pushes `linux/amd64` + `linux/arm64` images to GHCR.
-- Current tag: `v2.3.0`; packaging/update-check work is on `main` for the next
-  release.
+- Current tag: `v2.4.0`.
 
 ## Known constraints
 
@@ -267,8 +265,9 @@ TwitchLiveNotifier.exe --healthcheck
   optional dashboard token, but it should still stay on loopback or behind an
   authenticating reverse proxy when exposed.
 - No official Twitch API/EventSub mode.
-- Stream lifecycle, identity/threads, route templates, and secret storage are
-  shipped in v2.3.
+- Stream lifecycle, identity/threads, route templates, and secret storage
+  shipped in v2.3. Installers/packages, update checks, and rate-limit hardening
+  shipped in v2.4.
 
 ## Do not regress
 
@@ -295,13 +294,11 @@ TwitchLiveNotifier.exe --healthcheck
 We are continuing work on Twitch Live to Discord at
 /mnt/arty/twitch-live-notifier. Read README.md, docs/project-context.md,
 docs/competitive-research.md, and docs/roadmap.md first. The current release is
-v2.3.0 on main.
+v2.4.0 on main.
 
-Work on the P1 installer, signing, and auto-update slice: Windows installer and
-portable ZIP, optional Windows/macOS signing hooks, winget manifests, macOS
-.app bundle, Linux .deb/AppImage packages, and the GitHub-release update check.
-Signing credentials are repository secrets, so unsigned builds and checks must
-keep passing when the secrets are absent.
+Next focus: the free OSS signing application (SignPath Foundation or OSSign),
+then signed installer rollout and v2.5 planning. Keep unsigned builds and checks
+passing while signing credentials are absent.
 
 Before coding, restate the acceptance criteria and make a short implementation
 plan. Preserve the core behavior: no bot/OAuth required, multi-streamer and
