@@ -19,8 +19,9 @@ streamers exactly as you would in the desktop app.
 
 Configuration lives in the `twitch-live-data` volume at `/data/config.json`.
 Encrypted webhook URLs live in `/data/secrets.json`, with `/data/secret.key` used
-when the container has no OS keyring. The volume survives `docker compose down`,
-image upgrades, and container recreation.
+when the container has no OS keyring. Delivery history is stored in
+`/data/delivery-history.json` and never contains webhook URLs or tokens. The
+volume survives `docker compose down`, image upgrades, and container recreation.
 
 Check status and logs:
 
@@ -65,6 +66,26 @@ ports:
 
 The app only makes outbound requests to Twitch and Discord. It has no
 analytics, telemetry, or cloud relay.
+
+## Optional Twitch follows import
+
+The **no-sign-in** follows import works in Docker without any extra
+configuration: use the browser helper or paste a list into the dashboard. The
+helper runs in your browser, not in the container, and the app only receives the
+pasted list.
+
+To also show the optional **Sign in to Twitch** device-code fallback, set a
+public Twitch application client ID:
+
+```yaml
+environment:
+  TWITCH_LIVE_CLIENT_ID: "your-public-client-id"
+```
+
+No client secret is used. The import token stays in memory for one request and
+is never written to `/data`. See
+[Importing your Twitch follows](twitch-import.md) for the app registration
+steps.
 
 ## Configuration volume
 
@@ -122,8 +143,12 @@ Settings are not touched by an update. The previous image remains available for
 rollback by pinning a tag:
 
 ```yaml
-image: ghcr.io/ausbitbank/twitch-live-notifier:v2.4.0
+image: ghcr.io/ausbitbank/twitch-live-notifier:v2.5.0
 ```
+
+The in-app updater is disabled inside Docker; the dashboard shows the
+`docker compose pull` / `up -d` guidance instead. That keeps the container
+immutable and avoids replacing a running image.
 
 ## Timezone and quiet hours
 
@@ -157,7 +182,7 @@ The default is `UTC`. The image includes `tzdata`.
 ```json
 {
   "status": "healthy",
-  "version": "2.4.0",
+  "version": "2.5.0",
   "uptime_seconds": 3600,
   "monitoring": true,
   "paused": false,

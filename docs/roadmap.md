@@ -1,18 +1,18 @@
 # Roadmap
 
-- **Latest release:** 2.4.0
-- **Development baseline:** `main` after v2.4.0
+- **Latest published release:** 2.5.0
+- **Development baseline:** `main` after v2.5.0
 - **Research input:** [competitive-research.md](competitive-research.md)
 
 ## Current status
 
 | | |
 | --- | --- |
-| Latest published release | [v2.4.0](https://github.com/ausbitbank/twitch-live-notifier/releases/tag/v2.4.0) |
-| `main` branch | Post-v2.4.0; CI green |
-| Next release | v2.5.0 / future focus |
-| Active focus | Free OSS signing application, signed installers, v2.5 planning |
-| Shipped in v2.4.0 | Installers/packages, update check, rate-limit hardening |
+| Latest published release | [v2.5.0](https://github.com/ausbitbank/twitch-live-notifier/releases/tag/v2.5.0) |
+| `main` branch | Post-v2.5.0; CI green |
+| Next release | v2.6.0 / future focus |
+| Active focus | Free OSS signing, signed installers, v2.6 planning |
+| Shipped in v2.5.0 | No-login follows import, batched polling, verified auto-update, bulk routing, onboarding, delivery history/diagnostics |
 
 ## Product principles
 
@@ -250,11 +250,11 @@ downloaded binary.
 ### P1: Installer, signing, and auto-update
 
 **Shipped in 2.4.0.** Installers, packages, update checks, and optional signing
-hooks are in place. Silent self-replacing auto-update remains future work until
-signed artifacts and signature verification are available. Windows signing can
-use a free SignPath Foundation/OSSign OSS application or a paid/cloud
-certificate. macOS Developer ID signing requires a paid Apple Developer Program
-membership; a free Homebrew/source-build path is included.
+hooks are in place. **v2.5.0** adds checksum-verified self-update with a release
+manifest, platform-aware swap/restart, and optional Ed25519 manifest signing.
+Windows Authenticode and macOS Developer ID signing still require certificates;
+macOS Developer ID requires a paid Apple Developer Program membership. A free
+Homebrew/source-build path is included.
 
 Deliverables:
 
@@ -273,6 +273,51 @@ Acceptance criteria:
 - An update can be installed without losing settings.
 - The app reports its version and update status.
 - Unsigned development builds still build, test, and release.
+
+## v2.5 — Streamer import, scale, and safe updates
+
+**Shipped in 2.5.0.**
+
+### P1: No-login follows import
+
+- **Export follows** bookmarklet/helper reads the user's existing Twitch
+  following page in their browser. The app receives only a pasted list; no
+  Twitch token, OAuth app, or backend.
+- **Paste/file** import accepts plain text, CSV, JSON, and saved HTML up to 2,000
+  unique channels, with batched validation, already-added detection, and
+  optional destination assignment.
+- The optional device-code sign-in remains a fallback when a public client ID is
+  configured. Tokens stay memory-only.
+- See [twitch-import.md](twitch-import.md).
+
+### P1: Batched Twitch checks
+
+- Aliased GraphQL batches (up to 20 logins per request, bounded concurrency)
+  replace one request per streamer.
+- The batch path retains retries, `Retry-After`, and single-channel fallback.
+- Hundreds of streamers fit inside the normal poll window.
+
+### P1: Verified auto-update
+
+- Release manifest, OS/architecture-aware asset selection, SHA-256 verification,
+  preflight, atomic swap, restart, and rollback.
+- Windows detached helper, Linux raw/AppImage, macOS bundle swap, `.deb`/Docker
+  guided paths, and update progress in the dashboard.
+- Optional Ed25519 manifest signing via `UPDATE_SIGNING_KEY`.
+- See [auto-update.md](auto-update.md).
+
+### P1: Bulk management and routing
+
+- Search, status filters, sorting, multi-select, and bulk
+  enable/disable/delete/assign/unassign.
+- Streamer × destination routing matrix with sticky headers and responsive
+  overflow.
+
+### P1: Onboarding and operations
+
+- First-run setup checklist, webhook label suggestion, clearer empty states.
+- Persisted delivery history with filters and Discord message links.
+- Redacted diagnostics via Settings, `GET /api/diagnostics`, and `--doctor`.
 
 ## v3.0 — Reach and advanced modes
 
@@ -357,8 +402,18 @@ This must be a separate opt-in mode with OAuth and clear permission scopes.
 - ~~Add release packaging and signed-artifact hooks.~~ Windows installer, winget
   manifests, macOS `.app`, Linux `.deb`/AppImage, and optional signing hooks are
   in place on `main`.
+- ~~Batch Twitch polling and remove the one-request-per-streamer bottleneck.~~
+  Aliased GraphQL batches with bounded concurrency are live.
+- ~~Add checksum-verified in-app auto-update with platform-aware restart.~~ Live
+  for Windows, Linux raw/AppImage, and macOS bundles, with guided paths for
+  system packages and Docker.
+- ~~Add no-login follows import and bulk routing.~~ Live via the browser helper,
+  paste/file import, bulk actions, and the routing matrix.
+- ~~Add persisted delivery history, redacted diagnostics, and `--doctor`.~~ Live.
 - Keep `go vet` for Windows/Linux/macOS and race tests in CI.
 - Evaluate code signing and reproducible builds before a wider launch.
+- Consider committing Playwright/headless UI tests for the new import, update,
+  onboarding, history, and routing flows.
 
 ## Success metrics
 
@@ -374,16 +429,18 @@ This must be a separate opt-in mode with OAuth and clear permission scopes.
 
 ## Risks and open decisions
 
-1. **Twitch API stability.** Public GQL can change. Decide whether official API
-   mode is v2.3 or v3.0.
+1. **Twitch API stability.** Public GQL can change. Batched polling reduces
+   request volume, but an official API/EventSub mode remains the long-term
+   reliability answer; evaluate it for v3.0.
 2. **EventSub complexity.** User OAuth, subscription limits, reconnect logic, and
    duplicate events may outweigh the benefits for unlimited channels.
 3. **Bot-mode scope creep.** Live roles and schedules require a bot. Keep them
    optional and separate from the webhook core.
-4. **Webhook secret storage.** Encrypt at rest before encouraging shared/team
-   use.
+4. **Webhook secret storage.** Encrypted at rest; keep the settings folder
+   private and use redacted backups for support.
 5. **Installer and signing costs.** Budget for a Windows code-signing
-   certificate and macOS notarization.
+   certificate and macOS notarization. Checksum-verified auto-update and optional
+   Ed25519 manifest signing are available without paid certificates.
 6. **Hosted service temptation.** A cloud option would improve uptime but
    changes the privacy/ops model. Prefer Docker/self-host first.
 
@@ -392,7 +449,10 @@ This must be a separate opt-in mode with OAuth and clear permission scopes.
 - Unit tests and UI smoke tests pass.
 - Windows, Linux, and macOS builds pass in CI.
 - Release artifacts and checksums are uploaded.
+- `update-manifest.json` is published and its checksums match the uploaded
+  assets; if Ed25519 signing is configured, the signature verifies.
 - README and changelog are updated.
 - Upgrade path from the previous version is tested.
-- No real webhook URLs or secrets are committed.
+- No real webhook URLs, tokens, or secrets are committed.
+- Delivery history and diagnostics contain no webhook URLs or tokens.
 - Known limitations are documented.

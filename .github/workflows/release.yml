@@ -50,6 +50,10 @@ jobs:
             go build -trimpath -buildvcs=false \
             -ldflags "-s -w -X main.Version=${version}" \
             -o dist/TwitchLiveNotifier-linux-amd64 .
+          CGO_ENABLED=0 GOOS=linux GOARCH=arm64 \
+            go build -trimpath -buildvcs=false \
+            -ldflags "-s -w -X main.Version=${version}" \
+            -o dist/TwitchLiveNotifier-linux-arm64 .
           for arch in amd64 arm64; do
             CGO_ENABLED=0 GOOS=darwin GOARCH=$arch \
               go build -trimpath -buildvcs=false \
@@ -85,15 +89,19 @@ jobs:
           tar -czf "TwitchLiveNotifier-${GITHUB_REF_NAME}-Linux-x64.tar.gz" \
             TwitchLiveNotifier-linux-amd64 "TwitchLiveNotifier-v${version}-Linux-x64.deb" \
             "TwitchLiveNotifier-v${version}-Linux-x64.AppImage" README.md LICENSE docs
+          tar -czf "TwitchLiveNotifier-${GITHUB_REF_NAME}-Linux-arm64.tar.gz" \
+            TwitchLiveNotifier-linux-arm64 README.md LICENSE docs
           tar -czf "TwitchLiveNotifier-${GITHUB_REF_NAME}-macOS.tar.gz" \
             TwitchLiveNotifier-macos-amd64 TwitchLiveNotifier-macos-arm64 \
             macos-amd64 macos-arm64 README.md LICENSE docs
           sha256sum TwitchLiveNotifier.exe TwitchLiveNotifier-linux-amd64 \
+            TwitchLiveNotifier-linux-arm64 \
             TwitchLiveNotifier-macos-amd64 TwitchLiveNotifier-macos-arm64 \
             "TwitchLiveNotifier-v${version}-Linux-x64.deb" \
             "TwitchLiveNotifier-v${version}-Linux-x64.AppImage" \
             "TwitchLiveNotifier-${GITHUB_REF_NAME}-Windows-x64.zip" \
             "TwitchLiveNotifier-${GITHUB_REF_NAME}-Linux-x64.tar.gz" \
+            "TwitchLiveNotifier-${GITHUB_REF_NAME}-Linux-arm64.tar.gz" \
             "TwitchLiveNotifier-${GITHUB_REF_NAME}-macOS.tar.gz" > SHA256SUMS.txt
 
       - name: Render Homebrew formula
@@ -110,10 +118,12 @@ jobs:
           files: |
             dist/TwitchLiveNotifier.exe
             dist/TwitchLiveNotifier-linux-amd64
+            dist/TwitchLiveNotifier-linux-arm64
             dist/TwitchLiveNotifier-macos-amd64
             dist/TwitchLiveNotifier-macos-arm64
             dist/TwitchLiveNotifier-${{ github.ref_name }}-Windows-x64.zip
             dist/TwitchLiveNotifier-${{ github.ref_name }}-Linux-x64.tar.gz
+            dist/TwitchLiveNotifier-${{ github.ref_name }}-Linux-arm64.tar.gz
             dist/TwitchLiveNotifier-${{ github.ref_name }}-macOS.tar.gz
             dist/TwitchLiveNotifier-v${{ steps.version.outputs.version }}-Linux-x64.deb
             dist/TwitchLiveNotifier-v${{ steps.version.outputs.version }}-Linux-x64.AppImage
@@ -269,6 +279,110 @@ jobs:
           gh release upload "$GITHUB_REF_NAME" \
             "dist/TwitchLiveNotifier-${GITHUB_REF_NAME}-macOS.tar.gz" \
             dist/SHA256SUMS.txt --clobber
+
+  update-manifest:
+    needs: [release, windows-installer, macos-sign]
+    if: always() && needs.release.result == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Assemble update manifest
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          mkdir -p manifest-assets
+          gh release download "$GITHUB_REF_NAME" --pattern SHA256SUMS.txt --dir manifest-assets --clobber
+          candidates=(
+            "TwitchLiveNotifier.exe"
+            "TwitchLiveNotifier-linux-amd64"
+            "TwitchLiveNotifier-${GITHUB_REF_NAME}-Linux-arm64.tar.gz"
+            "TwitchLiveNotifier-${GITHUB_REF_NAME}-macOS.tar.gz"
+          )
+          for name in "${candidates[@]}"; do
+            gh release download "$GITHUB_REF_NAME" --pattern "$name" --dir manifest-assets --clobber || true
+          done
+          export RELEASE_PUBLISHED_AT="$(gh release view "$GITHUB_REF_NAME" --json publishedAt --jq .publishedAt)"
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import os
+          import pathlib
+
+          tag = os.environ["GITHUB_REF_NAME"]
+          repo = os.environ["GITHUB_REPOSITORY"]
+          version = tag[1:] if tag.startswith("v") else tag
+          base = pathlib.Path("manifest-assets")
+
+          sums = {}
+          for line in (base / "SHA256SUMS.txt").read_text().splitlines():
+              fields = line.split()
+              if len(fields) >= 2:
+                  sums[fields[-1].lstrip("*")] = fields[0].lower()
+
+          candidates = {
+              "windows-amd64": ["TwitchLiveNotifier.exe"],
+              "linux-amd64": ["TwitchLiveNotifier-linux-amd64"],
+              "linux-arm64": [
+                  f"TwitchLiveNotifier-{tag}-Linux-arm64.tar.gz",
+                  "TwitchLiveNotifier-linux-arm64",
+              ],
+              "darwin-amd64": [f"TwitchLiveNotifier-{tag}-macOS.tar.gz"],
+              "darwin-arm64": [f"TwitchLiveNotifier-{tag}-macOS.tar.gz"],
+          }
+
+          assets = {}
+          for key, names in candidates.items():
+              for name in names:
+                  path = base / name
+                  if not path.is_file():
+                      continue
+                  digest = hashlib.sha256(path.read_bytes()).hexdigest()
+                  expected = sums.get(name)
+                  if expected and expected != digest:
+                      raise SystemExit(f"checksum mismatch for {name}")
+                  assets[key] = {
+                      "name": name,
+                      "url": f"https://github.com/{repo}/releases/download/{tag}/{name}",
+                      "sha256": digest,
+                      "size": path.stat().st_size,
+                  }
+                  break
+
+          required = ["windows-amd64", "linux-amd64", "linux-arm64", "darwin-amd64", "darwin-arm64"]
+          missing = [key for key in required if key not in assets]
+          if missing:
+              raise SystemExit("missing release assets: " + ", ".join(missing))
+
+          manifest = {"version": version, "assets": assets}
+          published = os.environ.get("RELEASE_PUBLISHED_AT", "")
+          if published:
+              manifest["published_at"] = published
+          pathlib.Path("update-manifest.json").write_text(
+              json.dumps(manifest, indent=2, sort_keys=True) + "\n"
+          )
+          PY
+          cat update-manifest.json
+          gh release upload "$GITHUB_REF_NAME" update-manifest.json --clobber
+
+      - name: Sign update manifest (optional)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          UPDATE_SIGNING_KEY: ${{ secrets.UPDATE_SIGNING_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "${UPDATE_SIGNING_KEY:-}" ]; then
+            echo "No UPDATE_SIGNING_KEY configured; publishing an unsigned manifest."
+            exit 0
+          fi
+          key_path="$RUNNER_TEMP/update-signing-key.pem"
+          printf '%s\n' "$UPDATE_SIGNING_KEY" > "$key_path"
+          openssl pkeyutl -sign -inkey "$key_path" -rawin \
+            -in update-manifest.json -out update-manifest.json.sig
+          rm -f "$key_path"
+          gh release upload "$GITHUB_REF_NAME" update-manifest.json.sig --clobber
 
   docker:
     needs: release

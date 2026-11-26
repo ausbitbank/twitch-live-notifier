@@ -1,5 +1,72 @@
 # Changelog
 
+## 2.5.0 - 2026-11-26
+
+### Streamer import without a Twitch sign-in
+
+- Added a local **Export follows** bookmarklet/helper that reads your existing
+  Twitch following page in your browser and copies the channel list. The app
+  never receives a Twitch token, and there is no backend or relay. See
+  [docs/twitch-import.md](docs/twitch-import.md).
+- Added **Paste a list** and file import (`.txt`, `.csv`, `.json`, saved
+  `.html`) with a 2,000-channel limit, batched Twitch validation, already-added
+  detection, and optional destination assignment.
+- Kept the optional device-code Twitch sign-in as a fallback when a public
+  client ID is configured. Tokens remain memory-only.
+- Raised the legacy bulk-add limit from 100 to 2,000 and made validation batched
+  instead of one request per channel.
+
+### Scale and reliability
+
+- Twitch checks now use aliased GraphQL batches (up to 20 logins per request,
+  bounded concurrency) instead of one request per streamer. Hundreds of
+  streamers fit inside the normal poll window.
+- Bulk import and bulk validation share the same batched path.
+- Added retry/backoff and rate-limit handling to batched requests, with a
+  single-channel fallback for endpoints that reject the batch shape.
+
+### Verified auto-update
+
+- Added an in-app installer that downloads the correct OS/architecture asset,
+  verifies its SHA-256 checksum, preflights the new binary, swaps it in, and
+  restarts. The previous binary or bundle is retained for rollback.
+- Added `update-manifest.json` generation to the release workflow, plus optional
+  Ed25519 manifest signing when `UPDATE_SIGNING_KEY` is configured.
+- Added Windows, Linux raw/AppImage, macOS bundle, `.deb`/system-package, and
+  Docker update paths. Non-writable or system-managed installs show a clear
+  manual-download fallback.
+- Added update progress, restart status, and automatic dashboard reconnection.
+- Windows uses a detached helper instead of renaming the running `.exe`.
+- See [docs/auto-update.md](docs/auto-update.md).
+
+### Streamer management at scale
+
+- Added search, status filters, sorting, multi-select, and bulk enable, disable,
+  delete, assign, and unassign actions.
+- Added a streamer × destination routing matrix with sticky headers and
+  responsive horizontal scrolling.
+- Imported streamers can be assigned to destinations during import.
+
+### Onboarding and operations
+
+- Added a first-run setup checklist covering destination, streamer, routing,
+  test/sample, and the first check. It can be dismissed per version.
+- Pasting a Discord webhook URL can now suggest a destination label from
+  Discord's webhook metadata.
+- Added a persisted **History** view for posts, edits, cleanup, skips, and
+  errors, with filters, Discord message links, and a clear action.
+- Added redacted diagnostics via **Copy diagnostics**, **Download diagnostics**,
+  `GET /api/diagnostics`, and `--doctor`. Webhook URLs, tokens, and secret IDs
+  are never included.
+- Added clearer empty states and next-step actions throughout the dashboard.
+
+### Documentation
+
+- Added [docs/twitch-import.md](docs/twitch-import.md),
+  [docs/auto-update.md](docs/auto-update.md), and
+  [docs/diagnostics.md](docs/diagnostics.md).
+- Updated README, roadmap, project context, Docker guide, and release notes.
+
 ## 2.4.0 - 2026-11-16
 
 ### Packaging

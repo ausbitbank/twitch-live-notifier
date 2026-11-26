@@ -150,6 +150,7 @@ func runDesktop(configPath string, pathErr error, open bool) int {
 		return 1
 	}
 
+	waitForUpdateRestart()
 	mutex, alreadyRunning, err := acquireSingleInstance()
 	if err != nil {
 		showMessage(appName, "❌ Could not start the app: "+err.Error(), true)

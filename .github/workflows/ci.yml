@@ -27,6 +27,15 @@ jobs:
       - name: Vet for Windows
         run: GOOS=windows GOARCH=amd64 go vet ./...
 
+      - name: Vet for macOS
+        run: GOOS=darwin GOARCH=amd64 go vet ./...
+
+      - name: Check dashboard JavaScript
+        run: |
+          node --check web/app.js
+          node --check web/follows-helper.js
+          node --check web/follows-bookmarklet.js
+
       - name: Cross-compile Windows executable
         run: |
           CGO_ENABLED=0 GOOS=windows GOARCH=amd64 GOAMD64=v1 \
@@ -40,6 +49,10 @@ jobs:
             go build -trimpath -buildvcs=false \
             -ldflags "-s -w" \
             -o /tmp/TwitchLiveNotifier-linux-amd64 .
+          CGO_ENABLED=0 GOOS=linux GOARCH=arm64 \
+            go build -trimpath -buildvcs=false \
+            -ldflags "-s -w" \
+            -o /tmp/TwitchLiveNotifier-linux-arm64 .
 
       - name: Build macOS dashboard executables
         run: |

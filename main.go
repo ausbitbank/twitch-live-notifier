@@ -27,6 +27,7 @@ func runCLI(args []string, configPath string, pathErr error) int {
 		check              = fs.Bool("check", false, "check all streamers once and exit")
 		serve              = fs.Bool("serve", false, "run the dashboard without the tray icon")
 		healthcheck        = fs.Bool("healthcheck", false, "check the local /healthz endpoint and exit")
+		doctor             = fs.Bool("doctor", false, "print redacted diagnostics JSON and exit")
 		healthcheckURLFlag = fs.String("healthcheck-url", "", "health endpoint URL used by --healthcheck")
 		configFlag         = fs.String("config", "", "use a custom settings file")
 		listenFlag         = fs.String("listen", "", "dashboard listen address (default 127.0.0.1:8787)")
@@ -57,14 +58,14 @@ func runCLI(args []string, configPath string, pathErr error) int {
 	}
 
 	actions := 0
-	for _, enabled := range []bool{*background, *check, *serve, *healthcheck} {
+	for _, enabled := range []bool{*background, *check, *serve, *healthcheck, *doctor} {
 		if enabled {
 			actions++
 		}
 	}
 	if actions > 1 {
 		prepareConsole()
-		fmt.Fprintln(os.Stderr, "Choose only one of --background, --check, --serve, or --healthcheck.")
+		fmt.Fprintln(os.Stderr, "Choose only one of --background, --check, --serve, --healthcheck, or --doctor.")
 		return 2
 	}
 	if *healthcheck {
@@ -89,11 +90,27 @@ func runCLI(args []string, configPath string, pathErr error) int {
 		return runServerOnly(configPath, *listenFlag)
 	case *check:
 		return runCheckOnce(configPath)
+	case *doctor:
+		return runDoctor(configPath)
 	default:
 		prepareConsole()
 		fmt.Print(usageText())
 		return 2
 	}
+}
+
+func runDoctor(configPath string) int {
+	app, err := NewApp(configPath)
+	if err != nil {
+		return cliError(err)
+	}
+	data, err := app.DiagnosticsJSON()
+	if err != nil {
+		return cliError(err)
+	}
+	prepareConsole()
+	fmt.Print(string(data))
+	return 0
 }
 
 func runCheckOnce(configPath string) int {
@@ -159,6 +176,9 @@ Usage:
   %s --healthcheck
       Probe the local /healthz endpoint and exit. Used by Docker.
 
+  %s --doctor
+      Print redacted diagnostics JSON and exit.
+
 Options:
   --config PATH          Use a custom settings file.
   --listen ADDR          Dashboard address (default 127.0.0.1:8787).
@@ -167,7 +187,8 @@ Options:
   --help, -h             Show this help.
 
 Settings are stored in:
-  %s`, appName, Version, exe, exe, exe, exe, exe, settingsPath)
+  %s
+`, appName, Version, exe, exe, exe, exe, exe, exe, settingsPath)
 	}
 	return fmt.Sprintf(`%s v%s
 
@@ -184,6 +205,9 @@ Usage:
   %s --healthcheck
       Probe the local /healthz endpoint and exit. Used by Docker.
 
+  %s --doctor
+      Print redacted diagnostics JSON and exit.
+
 Options:
   --config PATH          Use a custom settings file.
   --listen ADDR          Dashboard address (default 127.0.0.1:8787).
@@ -192,5 +216,6 @@ Options:
   --help, -h             Show this help.
 
 Settings are stored in:
-  %s`, appName, Version, exe, exe, exe, exe, settingsPath)
+  %s
+`, appName, Version, exe, exe, exe, exe, exe, settingsPath)
 }

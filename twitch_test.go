@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -54,6 +56,53 @@ const offlineTwitchJSON = `{
   }
 }`
 
+var twitchAliasPattern = regexp.MustCompile(`u\d+\s*:\s*user\s*\(\s*login\s*:\s*("(?:[^"\\]|\\.)*")\s*\)`)
+
+// twitchRequestLogins extracts alias logins from a batched GraphQL query. Tests
+// use it to answer both single and batch requests with one helper.
+func twitchRequestLogins(query string) []string {
+	matches := twitchAliasPattern.FindAllStringSubmatch(query, -1)
+	logins := make([]string, 0, len(matches))
+	for _, match := range matches {
+		value, err := strconv.Unquote(match[1])
+		if err == nil {
+			logins = append(logins, value)
+		}
+	}
+	return logins
+}
+
+func twitchBatchTestBody(template string, logins []string) string {
+	var payload struct {
+		Data map[string]json.RawMessage `json:"data"`
+	}
+	if err := json.Unmarshal([]byte(template), &payload); err != nil {
+		return template
+	}
+	var user map[string]any
+	if raw, ok := payload.Data["user"]; ok {
+		_ = json.Unmarshal(raw, &user)
+	}
+	data := make(map[string]any, len(logins))
+	for index, login := range logins {
+		if user == nil {
+			data["u"+strconv.Itoa(index)] = nil
+			continue
+		}
+		copyUser := make(map[string]any, len(user)+1)
+		for key, value := range user {
+			copyUser[key] = value
+		}
+		copyUser["login"] = login
+		data["u"+strconv.Itoa(index)] = copyUser
+	}
+	encoded, err := json.Marshal(map[string]any{"data": data})
+	if err != nil {
+		return template
+	}
+	return string(encoded)
+}
+
 func newTwitchTestServer(t *testing.T, body string) *httptest.Server {
 	t.Helper()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -70,13 +119,17 @@ func newTwitchTestServer(t *testing.T, body string) *httptest.Server {
 		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
 			t.Errorf("decode Twitch request: %v", err)
 		}
-		if request.Variables["login"] == "" {
-			t.Errorf("missing login variable")
-		}
 		if !strings.Contains(request.Query, "previewImageURL") || !strings.Contains(request.Query, "lastBroadcast") {
 			t.Errorf("query is missing expected fields")
 		}
 		w.Header().Set("Content-Type", "application/json")
+		if logins := twitchRequestLogins(request.Query); len(logins) > 0 {
+			io.WriteString(w, twitchBatchTestBody(body, logins))
+			return
+		}
+		if request.Variables["login"] == "" {
+			t.Errorf("missing login variable")
+		}
 		io.WriteString(w, body)
 	}))
 	t.Cleanup(server.Close)

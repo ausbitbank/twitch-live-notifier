@@ -50,6 +50,7 @@ type State struct {
 	DefaultEndedTemplate  Template                 `json:"default_ended_template"`
 	DashboardTokenSet     bool                     `json:"dashboard_token_set"`
 	Update                UpdateStatus             `json:"update"`
+	TwitchConnectEnabled  bool                     `json:"twitch_connect_enabled"`
 }
 
 type CheckSummary struct {
@@ -78,6 +79,11 @@ type App struct {
 	onQuit          func()
 	enableAutoCheck bool
 	updateStatus    UpdateStatus
+	updates         *UpdateManager
+	history         *deliveryLog
+
+	twitchMu      sync.Mutex
+	twitchImports map[string]*twitchImportSession
 }
 
 func NewApp(configPath string) (*App, error) {
@@ -93,7 +99,10 @@ func NewApp(configPath string) (*App, error) {
 		startedAt:       time.Now(),
 		wake:            make(chan struct{}, 1),
 		enableAutoCheck: true,
+		twitchImports:   make(map[string]*twitchImportSession),
 	}
+	app.updates = NewUpdateManager(app)
+	app.history = newDeliveryLog(filepath.Dir(configPath))
 	app.activity = append(app.activity, Activity{
 		ID:      newID(),
 		Time:    time.Now(),
@@ -235,10 +244,25 @@ func (a *App) runCheck(ctx context.Context) (CheckSummary, error) {
 	summary := CheckSummary{}
 	webhooks := cfg.Webhooks
 
+	// Collect enabled channels first so one batched Twitch request can cover
+	// every streamer. Posting stays sequential below to respect Discord rate
+	// limits and to preserve dedupe/routing behavior.
+	enabled := make([]Channel, 0, len(cfg.Channels))
+	logins := make([]string, 0, len(cfg.Channels))
 	for _, channel := range cfg.Channels {
 		if !channel.Enabled {
 			continue
 		}
+		enabled = append(enabled, channel)
+		logins = append(logins, channel.Login)
+	}
+
+	results := make(map[string]twitchBatchResult, len(logins))
+	if len(logins) > 0 && ctx.Err() == nil {
+		results = fetchTwitchChannelsBatchContext(ctx, logins)
+	}
+
+	for _, channel := range enabled {
 		summary.Channels++
 		select {
 		case <-ctx.Done():
@@ -247,7 +271,12 @@ func (a *App) runCheck(ctx context.Context) (CheckSummary, error) {
 		default:
 		}
 
-		posted, err := a.checkChannel(ctx, channel, webhooks)
+		key := strings.ToLower(strings.TrimSpace(channel.Login))
+		result, ok := results[key]
+		if !ok && result.Err == nil {
+			result = twitchBatchResult{Login: channel.Login, Err: errors.New("Twitch did not return this channel")}
+		}
+		posted, err := a.checkChannelWithUser(ctx, channel, webhooks, result.User, result.Err)
 		summary.Posted += posted
 		if err != nil {
 			summary.Errors++
@@ -268,11 +297,39 @@ func (a *App) finishCheck() {
 	a.mu.Unlock()
 }
 
+// checkChannel keeps the single-channel path used by manual checks and
+// existing tests. The scheduled monitor uses the batched runCheck path.
 func (a *App) checkChannel(ctx context.Context, channel Channel, webhooks []Webhook) (int, error) {
+	user, err := fetchTwitchChannelContext(ctx, channel.Login)
+	return a.checkChannelWithUser(ctx, channel, webhooks, user, err)
+}
+
+// deliveryRecordFor builds the shared, non-secret identity fields for a
+// delivery-history entry. Callers add the outcome-specific kind/level/reason.
+func deliveryRecordFor(channel Channel, webhook Webhook, info StreamInfo) DeliveryRecord {
+	name := strings.TrimSpace(channel.DisplayName)
+	if name == "" {
+		name = channel.Login
+	}
+	return DeliveryRecord{
+		ChannelID:    channel.ID,
+		ChannelLogin: channel.Login,
+		ChannelName:  name,
+		WebhookID:    webhook.ID,
+		WebhookLabel: webhook.Label,
+		StreamID:     info.StreamID,
+		Title:        info.Title,
+		Game:         info.Game,
+	}
+}
+
+func (a *App) checkChannelWithUser(ctx context.Context, channel Channel, webhooks []Webhook, user *twitchUser, err error) (int, error) {
 	previous := a.statusFor(channel.ID)
 	now := time.Now()
 
-	user, err := fetchTwitchChannelContext(ctx, channel.Login)
+	if err == nil && user == nil {
+		err = errors.New("Twitch did not return this channel")
+	}
 	if err != nil {
 		a.mu.Lock()
 		status := previous
@@ -331,6 +388,11 @@ func (a *App) checkChannel(ctx context.Context, channel Channel, webhooks []Webh
 
 	if allowed, reason := evaluateFilters(channel, info, now, time.Local); !allowed {
 		a.recordFilterSkip(channel.ID, info.StreamID, reason)
+		record := deliveryRecordFor(channel, Webhook{}, info)
+		record.Kind = deliveryKindSkipped
+		record.Level = deliveryLevelInfo
+		record.Reason = reason
+		a.recordDelivery(record)
 		return 0, nil
 	}
 
@@ -346,19 +408,27 @@ func (a *App) checkChannel(ctx context.Context, channel Channel, webhooks []Webh
 		}
 		if destination.LastStreamID != "" && destination.LastStreamID == info.StreamID {
 			a.markLiveSnapshot(channel.ID, webhook.ID, info)
-			a.maybeUpdateLiveMessage(ctx, channel.ID, destination, *webhook, info, now)
+			a.maybeUpdateLiveMessage(ctx, channel, destination, *webhook, info, now)
 			continue
 		}
 
 		result, postErr := postDiscordContextWithOptions(ctx, webhook.URL, buildPayloadForDestination(*webhook, &destination, info, now, false), discordWebhookOptions{ThreadID: webhook.ThreadID})
 		if postErr != nil {
 			a.recordWebhookFailure(webhook.ID, postErr)
+			record := deliveryRecordFor(channel, *webhook, info)
 			if delay := rateLimitDelay(postErr); delay > 0 {
 				a.markDestinationRateLimited(channel.ID, webhook.ID, delay)
 				a.addActivity("error", fmt.Sprintf("Rate limited by %s; retrying after %s.", webhook.Label, formatDuration(delay)))
+				record.Kind = deliveryKindSkipped
+				record.Level = deliveryLevelInfo
+				record.Reason = fmt.Sprintf("rate limited; retrying after %s", formatDuration(delay))
 			} else {
 				a.addActivity("error", fmt.Sprintf("Could not post to %s: %v", webhook.Label, postErr))
+				record.Kind = deliveryKindError
+				record.Level = deliveryLevelError
+				record.Reason = postErr.Error()
 			}
+			a.recordDelivery(record)
 			postErrors = append(postErrors, fmt.Sprintf("%s: %v", webhook.Label, postErr))
 			continue
 		}
@@ -367,6 +437,12 @@ func (a *App) checkChannel(ctx context.Context, channel Channel, webhooks []Webh
 		a.markPosted(channel.ID, webhook.ID, info, result.MessageID, webhook.URL, webhook.ThreadID, now)
 		posted++
 		a.addActivity("success", fmt.Sprintf("Posted %q to %s.", info.Title, webhook.Label))
+		record := deliveryRecordFor(channel, *webhook, info)
+		record.Kind = deliveryKindPosted
+		record.Level = deliveryLevelSuccess
+		record.MessageID = result.MessageID
+		record.MessageURL = result.MessageURL()
+		a.recordDelivery(record)
 	}
 
 	if len(postErrors) > 0 {
@@ -415,24 +491,41 @@ func (a *App) cleanupLiveMessages(ctx context.Context, channel Channel, webhooks
 		clear, err := a.applyCleanup(ctx, *webhook, destination, fallback, now)
 		if err != nil {
 			a.recordWebhookFailure(webhook.ID, err)
+			delivery := deliveryRecordFor(channel, *webhook, cleanupInfo(record, fallback))
+			delivery.Kind = deliveryKindCleaned
+			delivery.Level = deliveryLevelError
+			delivery.MessageID = record.MessageID
+			delivery.Reason = err.Error()
 			if delay := rateLimitDelay(err); delay > 0 {
 				a.markDestinationRateLimited(channel.ID, webhook.ID, delay)
 				a.addActivity("error", fmt.Sprintf("Rate limited while cleaning up the live message in %s; retrying after %s.", webhook.Label, formatDuration(delay)))
+				delivery.Reason = fmt.Sprintf("rate limited; retrying after %s", formatDuration(delay))
 			} else {
 				a.addActivity("error", fmt.Sprintf("Could not %s the live message in %s: %v", cleanupVerb(mode), webhook.Label, err))
 			}
+			a.recordDelivery(delivery)
 		} else if mode != cleanupOff {
 			a.clearDestinationRateLimit(channel.ID, webhook.ID)
 			message := "Cleaned up the live message in " + webhook.Label + "."
+			verb := "cleaned up the live message"
 			switch mode {
 			case cleanupDelete:
 				message = "Deleted the live message in " + webhook.Label + "."
+				verb = "deleted the live message"
 			case cleanupEdit:
 				message = "Updated the live message in " + webhook.Label + "."
+				verb = "updated the live message"
 			case cleanupPost:
 				message = "Posted the ended message in " + webhook.Label + "."
+				verb = "posted the ended message"
 			}
 			a.addActivity("info", message)
+			delivery := deliveryRecordFor(channel, *webhook, cleanupInfo(record, fallback))
+			delivery.Kind = deliveryKindCleaned
+			delivery.Level = deliveryLevelSuccess
+			delivery.MessageID = record.MessageID
+			delivery.Reason = verb
+			a.recordDelivery(delivery)
 		}
 		if clear || replacing {
 			a.clearLiveMessage(channel.ID, destination.WebhookID)
@@ -537,7 +630,8 @@ func cleanupInfo(record *LiveMessage, fallback StreamInfo) StreamInfo {
 	return info
 }
 
-func (a *App) maybeUpdateLiveMessage(ctx context.Context, channelID string, destination Destination, webhook Webhook, info StreamInfo, now time.Time) {
+func (a *App) maybeUpdateLiveMessage(ctx context.Context, channel Channel, destination Destination, webhook Webhook, info StreamInfo, now time.Time) {
+	channelID := channel.ID
 	if webhook.UpdateSeconds <= 0 {
 		return
 	}
@@ -560,23 +654,37 @@ func (a *App) maybeUpdateLiveMessage(ctx context.Context, channelID string, dest
 	payload := buildPayloadForDestination(webhook, &destination, info, now, false)
 	payload.Username = ""
 	payload.AvatarURL = ""
-	if _, err := editDiscordContext(ctx, targetURL, record.MessageID, payload, threadID); err != nil {
+	result, err := editDiscordContext(ctx, targetURL, record.MessageID, payload, threadID)
+	if err != nil {
 		a.recordWebhookFailure(webhook.ID, err)
+		delivery := deliveryRecordFor(channel, webhook, info)
+		delivery.Kind = deliveryKindEdited
+		delivery.Level = deliveryLevelError
+		delivery.MessageID = record.MessageID
+		delivery.Reason = err.Error()
 		if delay := rateLimitDelay(err); delay > 0 {
 			a.markDestinationRateLimited(channelID, webhook.ID, delay)
 			a.addActivity("error", fmt.Sprintf("Rate limited updating the live message in %s; retrying after %s.", webhook.Label, formatDuration(delay)))
+			delivery.Reason = fmt.Sprintf("rate limited; retrying after %s", formatDuration(delay))
 		} else {
 			if cleanupClearOnError(err) {
 				a.clearLiveMessage(channelID, webhook.ID)
 			}
 			a.addActivity("error", fmt.Sprintf("Could not update the live message in %s: %v", webhook.Label, err))
 		}
+		a.recordDelivery(delivery)
 		return
 	}
 	a.clearDestinationRateLimit(channelID, webhook.ID)
 	a.recordWebhookSuccess(webhook.ID)
 	a.markDestinationEdited(channelID, webhook.ID, now)
 	a.addActivity("info", fmt.Sprintf("Updated the live message in %s.", webhook.Label))
+	delivery := deliveryRecordFor(channel, webhook, info)
+	delivery.Kind = deliveryKindEdited
+	delivery.Level = deliveryLevelSuccess
+	delivery.MessageID = result.MessageID
+	delivery.MessageURL = result.MessageURL()
+	a.recordDelivery(delivery)
 }
 
 func (a *App) markPosted(channelID, webhookID string, info StreamInfo, messageID, messageURL, threadID string, now time.Time) {
@@ -926,6 +1034,7 @@ func (a *App) State() State {
 		DefaultEndedTemplate:  defaultEndedTemplate(),
 		DashboardTokenSet:     dashboardTokenSet,
 		Update:                update,
+		TwitchConnectEnabled:  twitchOAuthClientID() != "",
 	}
 }
 
@@ -1368,10 +1477,26 @@ func (a *App) TestWebhook(id string) (discordPostResult, error) {
 	if err != nil {
 		a.recordWebhookFailure(webhook.ID, err)
 		a.addActivity("error", fmt.Sprintf("Webhook test for %s failed: %v", webhook.Label, err))
+		a.recordDelivery(DeliveryRecord{
+			Kind:         deliveryKindError,
+			Level:        deliveryLevelError,
+			WebhookID:    webhook.ID,
+			WebhookLabel: webhook.Label,
+			Reason:       "test webhook: " + err.Error(),
+		})
 		return discordPostResult{}, err
 	}
 	a.recordWebhookSuccess(webhook.ID)
 	a.addActivity("success", "Sent a test message to "+webhook.Label+".")
+	a.recordDelivery(DeliveryRecord{
+		Kind:         deliveryKindPosted,
+		Level:        deliveryLevelSuccess,
+		WebhookID:    webhook.ID,
+		WebhookLabel: webhook.Label,
+		MessageID:    result.MessageID,
+		MessageURL:   result.MessageURL(),
+		Reason:       "test webhook",
+	})
 	return result, nil
 }
 
@@ -1421,11 +1546,21 @@ func (a *App) SendSample(channelID string, webhookIDs []string) (int, error) {
 		if _, err := postDiscordContextWithOptions(context.Background(), webhook.URL, buildPayloadForDestination(*webhook, destination, info, now, true), discordWebhookOptions{ThreadID: webhook.ThreadID}); err != nil {
 			a.recordWebhookFailure(webhook.ID, err)
 			a.addActivity("error", fmt.Sprintf("Sample post to %s failed: %v", webhook.Label, err))
+			record := deliveryRecordFor(channel, *webhook, info)
+			record.Kind = deliveryKindError
+			record.Level = deliveryLevelError
+			record.Reason = "sample: " + err.Error()
+			a.recordDelivery(record)
 			continue
 		}
 		a.recordWebhookSuccess(webhook.ID)
 		count++
 		a.addActivity("success", "Sent a last-stream sample to "+webhook.Label+".")
+		record := deliveryRecordFor(channel, *webhook, info)
+		record.Kind = deliveryKindPosted
+		record.Level = deliveryLevelSuccess
+		record.Reason = "sample"
+		a.recordDelivery(record)
 	}
 	if count == 0 {
 		return 0, errors.New("the sample could not be posted")

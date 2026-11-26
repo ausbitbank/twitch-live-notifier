@@ -26,12 +26,42 @@ explicit action and includes live webhook URLs; treat that file like a password.
 Restoring a redacted backup marks each destination invalid until its URL is
 re-entered.
 
-## Update checks
+## Update checks and auto-update
 
 When update checks are enabled (the default), the app requests the latest
 release metadata from `api.github.com`. It sends no settings, webhook URLs, or
 streamer data. Disable the check in Settings if you do not want that outbound
-request. The app never silently downloads or replaces its own binary.
+request.
+
+Auto-update only runs after you click **Install update**. The app downloads the
+release asset, verifies its SHA-256 checksum from the release manifest or
+`SHA256SUMS.txt`, preflights the binary, and keeps the previous binary or bundle
+for rollback. Releases may optionally publish an Ed25519-signed manifest; when a
+public key is pinned, an unsigned or mismatched manifest is rejected. Windows
+Authenticode and macOS notarization remain separate release-signing features.
+
+Docker and system-package installs are not self-replaced; the dashboard shows the
+appropriate `docker compose pull` or package-manager guidance.
+
+## Follows import
+
+The no-sign-in follows helper is a bookmarklet that you run on
+`https://www.twitch.tv/directory/following/channels` in your existing browser
+session. It reads links already rendered on that page, shows them in an editable
+overlay, and copies them to your clipboard. It does not contact this app,
+Twitch's API, Discord, or any other server. The app only receives the list you
+paste. No Twitch token is created or stored.
+
+The optional device-code sign-in fallback keeps its access token in memory only
+for the import and discards it after the follows list is fetched.
+
+## Delivery history and diagnostics
+
+`delivery-history.json` stores delivery outcomes (streamer/destination labels,
+stream ID, title, game, message ID/link, and error reason) and is capped at 1,000
+entries. It never contains webhook URLs, tokens, or secret IDs. The same rule
+applies to **Copy diagnostics**, **Download diagnostics**, `GET /api/diagnostics`,
+and `--doctor`.
 
 ## Dashboard token
 

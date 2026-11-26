@@ -163,10 +163,7 @@ func TestCheckForUpdatesFailureIsVisible(t *testing.T) {
 }
 
 func TestSelectUpdateDownload(t *testing.T) {
-	release := githubRelease{Assets: []struct {
-		Name               string `json:"name"`
-		BrowserDownloadURL string `json:"browser_download_url"`
-	}{
+	release := githubRelease{Assets: []githubAsset{
 		{Name: "TwitchLiveNotifier-v2.4.0-Windows-x64.zip", BrowserDownloadURL: "https://example.test/windows.zip"},
 		{Name: "TwitchLiveNotifier-v2.4.0-Windows-x64-Setup.exe", BrowserDownloadURL: "https://example.test/setup.exe"},
 		{Name: "TwitchLiveNotifier-v2.4.0-Linux-x64.tar.gz", BrowserDownloadURL: "https://example.test/linux.tar.gz"},
@@ -174,7 +171,7 @@ func TestSelectUpdateDownload(t *testing.T) {
 		{Name: "TwitchLiveNotifier-v2.4.0-Linux-x64.AppImage", BrowserDownloadURL: "https://example.test/linux.AppImage"},
 		{Name: "TwitchLiveNotifier-v2.4.0-macOS.tar.gz", BrowserDownloadURL: "https://example.test/mac.tar.gz"},
 	}}
-	if got := selectUpdateDownload(release, "windows"); got != "https://example.test/setup.exe" {
+	if got := selectUpdateDownload(release, "windows"); got != "https://example.test/windows.zip" {
 		t.Fatalf("windows download = %q", got)
 	}
 	if got := selectUpdateDownload(release, "linux"); got != "https://example.test/linux.AppImage" {

@@ -98,7 +98,7 @@ func runServerOnly(configPath, listen string) int {
 
 func runServerMode(configPath, listen string, openDashboard bool) int {
 	prepareConsole()
-	release, alreadyRunning, err := acquireInstanceLock(instanceLockPath(configPath))
+	release, alreadyRunning, err := acquireInstanceLockWithRestartWait(instanceLockPath(configPath))
 	if err != nil {
 		return cliError(err)
 	}
@@ -192,14 +192,25 @@ func (r webhookRequest) input(defaultEnabled bool) WebhookInput {
 
 func newDashboardHandler(app *App, onQuit func()) http.Handler {
 	mux := http.NewServeMux()
+	registerHistoryRoutes(mux, app)
+	registerImportRoutes(mux, app)
+	registerBulkRoutes(mux, app)
+	registerUpdateRoutes(mux, app)
+	registerWebhookInspectRoutes(mux, app)
 	staticFS, _ := fs.Sub(webFiles, "web")
 	indexHTML, _ := fs.ReadFile(webFiles, "web/index.html")
 	favicon, _ := fs.ReadFile(webFiles, "web/icon.png")
+	followsHelper, _ := fs.ReadFile(webFiles, "web/follows-helper.html")
 
 	mux.Handle("GET /static/", http.StripPrefix("/static/", http.FileServer(http.FS(staticFS))))
 	mux.HandleFunc("GET /favicon.ico", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "image/png")
 		_, _ = w.Write(favicon)
+	})
+	mux.HandleFunc("GET /follows-helper", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.Header().Set("Cache-Control", "no-store")
+		_, _ = w.Write(followsHelper)
 	})
 	mux.HandleFunc("GET /", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -281,6 +292,77 @@ func newDashboardHandler(app *App, onQuit func()) http.Handler {
 			return
 		}
 		writeJSON(w, http.StatusOK, app.State())
+	})
+	mux.HandleFunc("POST /api/channels/bulk", func(w http.ResponseWriter, r *http.Request) {
+		if !requireLocalJSON(w, r) {
+			return
+		}
+		var request struct {
+			Logins []string `json:"logins"`
+			Text   string   `json:"text"`
+		}
+		if !decodeJSON(w, r, &request) {
+			return
+		}
+		entries := append([]string(nil), request.Logins...)
+		if strings.TrimSpace(request.Text) != "" {
+			entries = append(entries, request.Text)
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Minute)
+		defer cancel()
+		result, err := app.AddChannelsBulk(ctx, entries)
+		if err != nil {
+			writeAPIError(w, http.StatusBadRequest, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"result": result, "state": app.State()})
+	})
+	mux.HandleFunc("POST /api/twitch/imports", func(w http.ResponseWriter, r *http.Request) {
+		if !requireLocalJSON(w, r) {
+			return
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+		defer cancel()
+		view, err := app.StartTwitchImport(ctx)
+		if err != nil {
+			writeAPIError(w, http.StatusBadRequest, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, view)
+	})
+	mux.HandleFunc("GET /api/twitch/imports/{id}", func(w http.ResponseWriter, r *http.Request) {
+		ctx, cancel := context.WithTimeout(r.Context(), 45*time.Second)
+		defer cancel()
+		view, err := app.PollTwitchImport(ctx, r.PathValue("id"))
+		if err != nil {
+			writeAPIError(w, http.StatusBadRequest, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, view)
+	})
+	mux.HandleFunc("POST /api/twitch/imports/{id}/import", func(w http.ResponseWriter, r *http.Request) {
+		if !requireLocalJSON(w, r) {
+			return
+		}
+		var request struct {
+			Logins []string `json:"logins"`
+		}
+		if !decodeJSON(w, r, &request) {
+			return
+		}
+		result, err := app.ImportTwitchFollows(r.PathValue("id"), request.Logins)
+		if err != nil {
+			writeAPIError(w, http.StatusBadRequest, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"result": result, "state": app.State()})
+	})
+	mux.HandleFunc("DELETE /api/twitch/imports/{id}", func(w http.ResponseWriter, r *http.Request) {
+		if !requireLocalJSON(w, r) {
+			return
+		}
+		app.CancelTwitchImport(r.PathValue("id"))
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 	})
 	mux.HandleFunc("POST /api/channels/{id}/check", func(w http.ResponseWriter, r *http.Request) {
 		if !requireLocalJSON(w, r) {

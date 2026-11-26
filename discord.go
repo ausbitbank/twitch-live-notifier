@@ -81,6 +81,49 @@ type discordFooter struct {
 
 type discordPostResult struct {
 	MessageID string
+	ChannelID string
+	GuildID   string
+}
+
+// MessageURL builds a jump link for the posted message when Discord returned
+// the guild and channel IDs. It returns an empty string for DMs, group DMs,
+// or a partial response.
+func (r discordPostResult) MessageURL() string {
+	return discordMessageURL(r.GuildID, r.ChannelID, r.MessageID)
+}
+
+// discordMessageURL builds https://discord.com/channels/<guild>/<channel>/<message>.
+// IDs are validated as Discord snowflakes so a malformed response cannot inject
+// a different URL into the dashboard.
+func discordMessageURL(guildID, channelID, messageID string) string {
+	guildID = strings.TrimSpace(guildID)
+	channelID = strings.TrimSpace(channelID)
+	messageID = strings.TrimSpace(messageID)
+	if !discordIDPattern.MatchString(guildID) || !discordIDPattern.MatchString(channelID) || !discordIDPattern.MatchString(messageID) {
+		return ""
+	}
+	return "https://discord.com/channels/" + guildID + "/" + channelID + "/" + messageID
+}
+
+// parseDiscordPostResult reads the message, channel, and guild IDs from a
+// webhook POST/PATCH response. Discord includes channel_id/guild_id on the
+// message object; older responses or DMs may omit the guild.
+func parseDiscordPostResult(body []byte, fallbackMessageID string) discordPostResult {
+	var response struct {
+		ID        string `json:"id"`
+		ChannelID string `json:"channel_id"`
+		GuildID   string `json:"guild_id"`
+	}
+	_ = json.Unmarshal(body, &response)
+	result := discordPostResult{
+		MessageID: strings.TrimSpace(response.ID),
+		ChannelID: strings.TrimSpace(response.ChannelID),
+		GuildID:   strings.TrimSpace(response.GuildID),
+	}
+	if result.MessageID == "" {
+		result.MessageID = strings.TrimSpace(fallbackMessageID)
+	}
+	return result
 }
 
 // discordHTTPError carries the status code so callers can distinguish a
@@ -136,11 +179,7 @@ func postDiscordContextWithOptions(ctx context.Context, webhookURL string, paylo
 	if err != nil {
 		return discordPostResult{}, err
 	}
-	var posted struct {
-		ID string `json:"id"`
-	}
-	_ = json.Unmarshal(respBody, &posted)
-	return discordPostResult{MessageID: posted.ID}, nil
+	return parseDiscordPostResult(respBody, ""), nil
 }
 
 // editDiscordContext edits an existing webhook message. The caller passes the
@@ -161,14 +200,7 @@ func editDiscordContext(ctx context.Context, webhookURL, messageID string, paylo
 	if err != nil {
 		return discordPostResult{}, err
 	}
-	var edited struct {
-		ID string `json:"id"`
-	}
-	_ = json.Unmarshal(respBody, &edited)
-	if edited.ID == "" {
-		edited.ID = messageID
-	}
-	return discordPostResult{MessageID: edited.ID}, nil
+	return parseDiscordPostResult(respBody, messageID), nil
 }
 
 func deleteDiscordContext(ctx context.Context, webhookURL, messageID, threadID string) error {

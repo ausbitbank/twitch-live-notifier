@@ -22,9 +22,10 @@ const (
 	twitchMaxAttempts = 3
 )
 
-const twitchGQLQuery = `query ChannelData($login: String!) {
-  user(login: $login) {
-    login
+// twitchUserFields is shared by the single-channel query and the batched
+// alias query so both paths always request the same profile, stream, and
+// archive fields.
+const twitchUserFields = `    login
     displayName
     profileImageURL(width: 600)
     bannerImageURL
@@ -54,9 +55,17 @@ const twitchGQLQuery = `query ChannelData($login: String!) {
           id
         }
       }
-    }
+    }`
+
+const twitchGQLQuery = `query ChannelData($login: String!) {
+  user(login: $login) {
+` + twitchUserFields + `
   }
 }`
+
+// errTwitchChannelNotFound is used by the batch path so callers can report a
+// consistent "channel not found" reason without leaking the alias index.
+var errTwitchChannelNotFound = errors.New("Twitch channel not found")
 
 var (
 	twitchGQLURL    = "https://gql.twitch.tv/gql"

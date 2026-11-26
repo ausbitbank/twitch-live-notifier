@@ -154,6 +154,51 @@ func TestCheckNowPostsToMultipleWebhooks(t *testing.T) {
 	}
 }
 
+func TestCheckNowUsesOneBatchedTwitchRequest(t *testing.T) {
+	var twitchCalls atomic.Int32
+	twitch := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		twitchCalls.Add(1)
+		var request struct {
+			Query     string            `json:"query"`
+			Variables map[string]string `json:"variables"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Errorf("decode Twitch request: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if logins := twitchRequestLogins(request.Query); len(logins) > 0 {
+			io.WriteString(w, twitchBatchTestBody(liveTwitchJSON, logins))
+			return
+		}
+		io.WriteString(w, liveTwitchJSON)
+	}))
+	setTwitchTestURL(t, twitch)
+	discord, capture := newDiscordCapture(t)
+
+	app := newTestApp(t)
+	injectWebhook(t, app, "Community", discord.URL+"/api/webhooks/1/token")
+	for _, login := range []string{"alpha", "beta", "gamma"} {
+		if _, err := app.AddChannel(login); err != nil {
+			t.Fatalf("AddChannel(%s) returned error: %v", login, err)
+		}
+	}
+
+	twitchCalls.Store(0)
+	summary, err := app.CheckNow(context.Background())
+	if err != nil {
+		t.Fatalf("CheckNow returned error: %v", err)
+	}
+	if summary.Channels != 3 || summary.Live != 3 || summary.Posted != 3 {
+		t.Fatalf("summary = %+v", summary)
+	}
+	if twitchCalls.Load() != 1 {
+		t.Fatalf("Twitch requests = %d, want one batched request", twitchCalls.Load())
+	}
+	if capture.count() != 3 {
+		t.Fatalf("Discord calls = %d, want 3", capture.count())
+	}
+}
+
 func TestRemoveWebhookClearsDestinations(t *testing.T) {
 	app := newTestApp(t)
 	webhook := injectWebhook(t, app, "Community", "https://discord.com/api/webhooks/1234567890/abcdefghijklmnopqrstuvwxyz")

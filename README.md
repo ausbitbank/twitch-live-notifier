@@ -5,7 +5,7 @@
 <h1 align="center">Twitch Live to Discord</h1>
 
 <p align="center">
-  <strong>Twitch live alerts in Discord — without a bot, OAuth, or cloud account.</strong><br>
+  <strong>Twitch live alerts in Discord — without a bot, cloud account, or Twitch login for alerts.</strong><br>
   A private, local-first dashboard for communities that follow many streamers and post to several Discord channels.
 </p>
 
@@ -61,7 +61,8 @@ smaller approach:
 - **Bring your own Discord webhook.** No bot to invite, no Discord application,
   no OAuth consent screen.
 - **Bring a Twitch username.** No Twitch login, API key, or application
-  registration.
+  registration is needed to monitor channels. An optional follows import can
+  connect Twitch with a public device-code client.
 - **Keep it local.** The dashboard and settings live on your machine. The app
   talks directly to Twitch and Discord.
 - **Route alerts your way.** One streamer can post to many labelled destinations;
@@ -139,8 +140,13 @@ Open <http://127.0.0.1:8787/> (or the URL printed in the terminal).
 
 1. Click **Add destination**, paste the Discord webhook URL, and click
    **Test webhook**.
-2. Click **Add streamer** and enter a Twitch username or channel URL.
+2. Click **Add streamer** and enter a Twitch username or channel URL. Or click
+   **Import follows** to use the no-sign-in browser helper, paste a list, or
+   import a saved file. See
+   [Importing your Twitch follows](docs/twitch-import.md).
 3. On the streamer card, tick the destinations where that streamer should post.
+   For many streamers, use **Routing** to toggle a whole streamer × destination
+   matrix.
 4. Click **Send sample** to post a clearly marked example.
 5. Click **Check all now** to run a real check.
 
@@ -196,8 +202,16 @@ you want to use and paste the URL into the app.
 
 ### Do I need a Twitch account or API key?
 
-No. The app reads public channel data from Twitch's web endpoint. There is no
-Twitch login or OAuth flow.
+No. The app reads public channel data from Twitch's web endpoint, so monitoring
+never requires a Twitch login or OAuth.
+
+There is one optional convenience: **Import follows** can read the channels you
+already follow. The recommended path is a local browser helper/bookmarklet that
+uses your existing Twitch browser session; the app only receives the copied
+list, not a token. You can also paste a list or import a saved file. An optional
+device-code sign-in is available when the build is configured with a public
+Twitch client ID, but it is not required. See
+[Importing your Twitch follows](docs/twitch-import.md).
 
 ### Does my computer need to stay on?
 
@@ -234,6 +248,15 @@ Yes. Per destination, you can leave the post, delete it, edit it into a
 stream-ended message, or post a separate ended message with the last title/game
 and VOD link when available.
 
+### How do updates work?
+
+When update checks are enabled, the app asks GitHub for the latest release. The
+Settings card shows the current/latest version and an **Install update** button
+when the install location is writable. The update downloads the correct asset,
+verifies its SHA-256 checksum, replaces the app, and restarts. Your settings are
+preserved. System packages and Docker show a manual/package-manager path. See
+[Verified auto-update](docs/auto-update.md).
+
 ### Does it use a cloud service or analytics?
 
 No. There is no analytics, telemetry, or cloud relay. The app talks directly to
@@ -258,18 +281,18 @@ minimum is 30 seconds. Very short streams can still be missed by polling.
 | | |
 | --- | --- |
 | **Latest published release** | [GitHub Releases](https://github.com/ausbitbank/twitch-live-notifier/releases/latest) — the release badge above shows the current tag |
-| **`main` branch** | Post-v2.4.0; CI is green |
-| **Next release** | v2.5.0 / future focus |
+| **`main` branch** | Post-v2.5.0; CI is green |
+| **Next release** | v2.6.0 / future focus |
 | **Roadmap** | [docs/roadmap.md](docs/roadmap.md) |
 | **Changelog** | [CHANGELOG.md](CHANGELOG.md) |
 
-The latest release includes the stream lifecycle, per-route templates, secret
-storage, scoped mention controls, installers and packages, the GitHub release
-update check, and hardened Discord rate-limit handling.
+The latest release includes no-login follows import, batched Twitch checks,
+checksum-verified auto-update, bulk streamer routing, first-run onboarding,
+delivery history, and redacted diagnostics.
 
 ## Feature list
 
-Features are in the latest release.
+Features are in the latest release or on `main`.
 
 ### Setup and routing
 
@@ -279,7 +302,16 @@ Features are in the latest release.
   destination → many streamers.
 - Pause a streamer or a destination without losing its settings.
 - Add streamers from a username, `twitch.tv` URL, or mobile URL.
-- Add destinations by paste-in Discord webhook URL.
+- Import follows without a Twitch sign-in using a local browser helper, or paste
+  a list, CSV, JSON, or saved HTML. Batched validation supports up to 2,000
+  channels per import.
+- The optional device-code Twitch sign-in remains a fallback when a public client
+  ID is configured.
+- Search, filter, and sort streamers; multi-select for bulk enable, disable,
+  delete, assign, and unassign.
+- A streamer × destination routing matrix for fast bulk routing.
+- Add destinations by paste-in Discord webhook URL; the label can be suggested
+  from Discord's webhook metadata.
 - Test a webhook, send a last-stream sample, or run a check immediately.
 
 ### Messages and Discord
@@ -332,8 +364,11 @@ Features are in the latest release.
 
 ### Reliability
 
+- Aliased Twitch GraphQL batches (up to 20 logins per request, bounded
+  concurrency) keep hundreds of streamers inside the poll window.
 - Per-stream, per-destination dedupe that survives restarts.
-- Bounded Twitch retries with jittered exponential backoff.
+- Bounded Twitch retries with jittered exponential backoff, including batched
+  requests with a single-channel fallback.
 - Discord `429` handling with short inline retries and persisted per-destination
   retry windows.
 - Proactive Discord `X-RateLimit-*` handling and jittered fallback delays.
@@ -342,6 +377,19 @@ Features are in the latest release.
 - Cross-platform single-instance locking.
 - `/healthz` with liveness, last-check age, uptime, pause state, and counts.
 - 15-minute check timeout for scheduled and manual checks.
+
+### Operations and updates
+
+- First-run setup checklist for destination, streamer, routing, test/sample, and
+  first check.
+- Persisted delivery history for posts, edits, cleanup, skips, and errors, with
+  filters and Discord message links.
+- Redacted diagnostics via Settings, `GET /api/diagnostics`, or `--doctor`. See
+  [Delivery history and diagnostics](docs/diagnostics.md).
+- Checksum-verified in-app auto-update with progress, restart, and rollback.
+- Windows detached update helper; Linux raw/AppImage in-place updates; macOS
+  bundle swap; guided paths for `.deb`, system packages, and Docker.
+- Optional Ed25519 signature pinning for the release manifest.
 
 ### Privacy and configuration
 
@@ -353,8 +401,8 @@ Features are in the latest release.
   from Settings.
 - Optional dashboard token for API access when the dashboard is exposed beyond
   loopback.
-- Optional update check that reports the latest GitHub release; no silent
-  self-replacing updater.
+- Update checks can be disabled; verified auto-update only runs when you click
+  **Install update**.
 
 ### Platforms and packaging
 
@@ -364,6 +412,8 @@ Features are in the latest release.
 - macOS Intel and Apple Silicon `.app` bundles.
 - Linux `.deb` and AppImage packages.
 - winget manifests in the release assets.
+- Checksum-verified in-app updates on writable Windows, Linux raw/AppImage, and
+  macOS `.app` installs; guided manual updates for system packages and Docker.
 - Multi-arch Docker images for `linux/amd64` and `linux/arm64`.
 - Docker healthcheck and persistent config volume.
 
@@ -371,7 +421,8 @@ Features are in the latest release.
 
 - **The app and host must stay online.** This is the most important operational
   requirement. A sleeping laptop or stopped container cannot post alerts.
-- Polling defaults to 2 minutes, so very short streams can be missed.
+- Polling defaults to 2 minutes, so very short streams can be missed. Batched
+  checks keep large streamer lists within the window, but they are still polls.
 - Twitch can change its private web endpoint or public web client ID. If that
   happens, the app needs an update.
 - Live-role automation and Discord scheduled-event sync are not implemented;
@@ -381,7 +432,10 @@ Features are in the latest release.
   port 8787 directly.
 - Release artifacts are unsigned unless signing is configured. Unsigned Windows
   builds may trigger SmartScreen; unsigned macOS apps may require a Gatekeeper
-  override.
+  override. Auto-update verifies SHA-256, and optional Ed25519 manifest signing
+  can pin releases, but that is not a substitute for Authenticode/notarization.
+- Linux `.deb`, system-package, and Docker installs are updated with the package
+  manager or `docker compose pull`, not in place.
 - Without an OS keyring, the fallback `secret.key` protects encrypted webhook
   URLs only as well as the local file permissions. Keep the settings folder
   private.
@@ -399,10 +453,14 @@ Features are in the latest release.
 - Native Win32 tray/message-box code for Windows.
 - Browser dashboard and JSON API on all platforms.
 - Twitch is checked through Twitch's public web GraphQL endpoint. No Twitch
-  OAuth token or bot is used.
+  OAuth token or bot is used. Checks are batched with aliased queries.
 - Discord delivery uses webhook `POST`, `PATCH`, and `DELETE` calls.
 - Monitoring runs in the app process, not in the browser tab.
 - Default poll interval: **120 seconds**; minimum 30 seconds.
+- Updates use a release manifest and SHA-256 verification; the previous binary
+  or bundle is kept for rollback.
+- Delivery history is stored in `delivery-history.json` and capped at 1,000
+  entries. Diagnostics are redacted.
 - Single instance per settings file: Unix `flock`, Windows named mutex.
 
 </details>
@@ -417,9 +475,10 @@ Features are in the latest release.
 | macOS | `~/Library/Application Support/TwitchLiveNotifier/` |
 | Docker | `/data/` in the `twitch-live-data` volume |
 
-The folder contains `config.json`, `secrets.json`, and (when no OS keyring is
-available) `secret.key`. Config schema is version 4; version 3 configs load
-automatically.
+The folder contains `config.json`, `secrets.json`, `delivery-history.json`, and
+(when no OS keyring is available) `secret.key`. Config schema is version 4;
+version 3 configs load automatically. Delivery history contains streamer and
+destination labels plus outcomes, never webhook URLs or tokens.
 
 **Download backup** redacts webhook URLs. **With secrets** includes them and
 should be treated like a password. **Restore backup** imports a backup; redacted
@@ -445,8 +504,9 @@ loopback. `/healthz` stays public for Docker health checks.
 - `401`/`403`/`404` mark a destination invalid and skip it until the URL changes
   or a test succeeds.
 - Scheduled and manual checks have a 15-minute timeout.
-- The check loop is still sequential; a full persistent post queue/worker pool
-  per destination is future work.
+- Twitch checks are batched; Discord posting still runs sequentially within a
+  check to respect per-webhook rate limits. A persistent post queue/worker pool
+  is future work.
 
 </details>
 
@@ -469,6 +529,9 @@ TwitchLiveNotifier[.exe] --serve
 
 TwitchLiveNotifier[.exe] --healthcheck
     Probe the local /healthz endpoint and exit. Used by Docker.
+
+TwitchLiveNotifier[.exe] --doctor
+    Print redacted diagnostics JSON and exit.
 ```
 
 | Option | Description |
@@ -476,6 +539,7 @@ TwitchLiveNotifier[.exe] --healthcheck
 | `--config PATH` | Use a custom settings file. |
 | `--listen ADDR` | Dashboard listen address, e.g. `127.0.0.1:8787` or `0.0.0.0:8787`. |
 | `--healthcheck-url URL` | Health URL used by `--healthcheck`. |
+| `--doctor` | Print redacted diagnostics JSON and exit. |
 | `--version` | Print the version. |
 | `--help`, `-h` | Show help. |
 
@@ -598,14 +662,14 @@ Packages:
 
 ```bash
 # Linux .deb / AppImage (AppImage needs appimagetool)
-./packaging/linux/build-deb.sh 2.4.0
-APPIMAGETOOL=/path/to/appimagetool ./packaging/linux/build-appimage.sh 2.4.0
+./packaging/linux/build-deb.sh 2.5.0
+APPIMAGETOOL=/path/to/appimagetool ./packaging/linux/build-appimage.sh 2.5.0
 
 # macOS .app bundle
-./packaging/macos/build-app.sh 2.4.0 arm64 dist/TwitchLiveNotifier-macos-arm64
+./packaging/macos/build-app.sh 2.5.0 arm64 dist/TwitchLiveNotifier-macos-arm64
 
 # Windows installer (on Windows, with Inno Setup 6)
-.\packaging\windows\build-installer.ps1 -Version 2.4.0
+.\packaging\windows\build-installer.ps1 -Version 2.5.0
 ```
 
 Docker:

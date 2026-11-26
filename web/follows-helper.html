@@ -1,0 +1,187 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Following list helper · Twitch Live to Discord</title>
+<style>
+  :root {
+    color-scheme: dark;
+    --bg: #0e0e10;
+    --panel: #18181b;
+    --panel-2: #202024;
+    --line: #3a3a3d;
+    --text: #efeff1;
+    --muted: #adadb8;
+    --accent: #9147ff;
+    --accent-hover: #772ce8;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    min-height: 100vh;
+    background:
+      radial-gradient(1200px 600px at 80% -10%, rgba(145, 71, 255, .18), transparent 60%),
+      var(--bg);
+    color: var(--text);
+    font: 15px/1.55 Inter, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  main {
+    width: min(760px, calc(100vw - 32px));
+    margin: 48px auto 64px;
+  }
+  .eyebrow {
+    margin: 0 0 8px;
+    color: var(--accent);
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: .14em;
+    text-transform: uppercase;
+  }
+  h1 {
+    margin: 0 0 12px;
+    font-size: clamp(28px, 5vw, 40px);
+    line-height: 1.12;
+    letter-spacing: -.02em;
+  }
+  .lede { margin: 0 0 28px; color: var(--muted); font-size: 16px; max-width: 62ch; }
+  .card {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    padding: 22px;
+    margin-bottom: 18px;
+  }
+  ol.steps { margin: 0; padding-left: 22px; }
+  ol.steps li { margin: 0 0 12px; }
+  ol.steps li:last-child { margin-bottom: 0; }
+  ol.steps span { color: var(--muted); }
+  a.inline, a.inline:visited { color: #bf94ff; }
+  .bookmark-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 14px;
+    margin-top: 20px;
+    padding-top: 18px;
+    border-top: 1px solid var(--line);
+  }
+  #bookmarklet {
+    display: inline-block;
+    padding: 11px 18px;
+    border-radius: 8px;
+    background: var(--accent);
+    color: #fff;
+    font-weight: 700;
+    text-decoration: none;
+    cursor: grab;
+    box-shadow: 0 6px 20px rgba(145, 71, 255, .35);
+  }
+  #bookmarklet:hover { background: var(--accent-hover); }
+  #bookmarklet:active { cursor: grabbing; }
+  #bookmarklet[aria-disabled="true"] { background: #4a4a4f; box-shadow: none; cursor: progress; }
+  #bookmarklet-status { color: var(--muted); font-size: 13px; }
+  h2 { margin: 0 0 8px; font-size: 18px; letter-spacing: -.01em; }
+  .card p { margin: 0 0 12px; color: var(--muted); }
+  button {
+    appearance: none;
+    border: 0;
+    border-radius: 7px;
+    background: var(--panel-2);
+    color: var(--text);
+    border: 1px solid var(--line);
+    padding: 9px 14px;
+    font: 600 13px/1.2 inherit;
+    cursor: pointer;
+  }
+  button:hover { border-color: #5c5c62; background: #26262b; }
+  textarea {
+    display: block;
+    width: 100%;
+    margin-top: 12px;
+    min-height: 96px;
+    resize: vertical;
+    background: #0b0b0d;
+    color: var(--text);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 10px 12px;
+    font: 12px/1.5 ui-monospace, SFMono-Regular, Consolas, monospace;
+  }
+  .privacy {
+    margin: 22px 0 0;
+    padding: 14px 16px;
+    border-left: 3px solid var(--accent);
+    color: var(--muted);
+    font-size: 13px;
+    background: rgba(145, 71, 255, .08);
+    border-radius: 0 8px 8px 0;
+  }
+  code {
+    background: var(--panel-2);
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    padding: 1px 5px;
+    font-size: .92em;
+  }
+</style>
+</head>
+<body>
+<main>
+  <p class="eyebrow">Twitch Live to Discord</p>
+  <h1>Export the streamers you follow</h1>
+  <p class="lede">
+    This helper builds a bookmarklet that reads your own Twitch following page in your
+    existing browser session. No Twitch sign-in, no app registration, and no data leaves
+    your browser.
+  </p>
+
+  <section class="card">
+    <ol class="steps">
+      <li>
+        <strong>Drag</strong> the purple button to your bookmarks bar.
+        <span>If the bar is hidden, show it first (usually Ctrl/Cmd + Shift + B).</span>
+      </li>
+      <li>
+        <strong>Open</strong>
+        <a class="inline" href="https://www.twitch.tv/directory/following/channels" target="_blank" rel="noreferrer noopener">twitch.tv/directory/following/channels</a>
+        and wait for the channel cards to appear.
+      </li>
+      <li>
+        <strong>Click the bookmark.</strong>
+        <span>It scrolls the page, collects your channel links, and shows an editable list. Copy it, then paste it into the notifier's import dialog.</span>
+      </li>
+    </ol>
+
+    <div class="bookmark-row">
+      <a id="bookmarklet" href="#" aria-disabled="true" draggable="true">Export follows</a>
+      <span id="bookmarklet-status" role="status">Loading bookmarklet…</span>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>Manual copy / console fallback</h2>
+    <p>
+      Some browsers block dragging bookmarklets, and some pages block
+      <code>javascript:</code> URLs through their security policy. If clicking
+      the bookmark does nothing, open DevTools (<code>F12</code>) → <strong>Console</strong>
+      on the Twitch following page, paste the console script below, and press
+      Enter. It runs in the page's existing session and only reads rendered
+      links.
+    </p>
+    <div class="bookmark-row">
+      <button id="copy-code" type="button">Copy bookmarklet code</button>
+      <button id="copy-console" type="button">Copy console script</button>
+    </div>
+    <textarea id="bookmarklet-code" readonly aria-label="Bookmarklet source"></textarea>
+  </section>
+
+  <p class="privacy">
+    The bookmarklet only reads links already rendered in your browser, displays them in an
+    overlay, and copies them to your clipboard. It does not contact this app, Twitch's API,
+    Discord, or any other server.
+  </p>
+</main>
+<script src="/static/follows-helper.js"></script>
+</body>
+</html>

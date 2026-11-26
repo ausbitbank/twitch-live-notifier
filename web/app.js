@@ -26,6 +26,11 @@
     copy: '<rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>',
     download: '<path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/>',
     upload: '<path d="M12 21V9"/><path d="m7 14 5-5 5 5"/><path d="M5 3h14"/>',
+    history: '<path d="M3 12a9 9 0 1 0 2.64-6.36"/><path d="M3 3v6h6"/><path d="M12 7v5l3 2"/>',
+    shield: '<path d="M12 3l7 3v6c0 4.5-3 7.5-7 9-4-1.5-7-4.5-7-9V6Z"/><path d="m9 12 2 2 4-4"/>',
+    filter: '<path d="M3 5h18l-7 8v6l-4 2v-8Z"/>',
+    file: '<path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9Z"/><path d="M14 3v6h6"/>',
+    info: '<circle cx="12" cy="12" r="9"/><path d="M12 11v5"/><path d="M12 8h.01"/>',
   };
 
   const MAX = {
@@ -48,8 +53,46 @@
   let routePreviewSequence = 0;
   let routeLastFocusedField = null;
   let escHandler = null;
+  let twitchImportState = null;
+  let twitchImportTimer = null;
   let tokenPromptActive = false;
   let tokenPromptDismissed = false;
+
+  let importModalTab = "helper";
+  let importBookmarklet = "";
+  let importBookmarkletPromise = null;
+  let importFileSource = false;
+
+  let updateInstallTimer = null;
+  let updateInstallEndpointMissing = false;
+  let updateInstallStartedAt = 0;
+  let updateInstallLastJob = null;
+  let awaitingRestart = false;
+  let restartPollTimer = null;
+  let restartBaseVersion = "";
+  let restartSawDisconnect = false;
+  let updateInstallRestartRequested = false;
+
+  let historyLoaded = false;
+  let historyLoading = false;
+  let historyError = "";
+  let historyData = { entries: [], total: 0, limit: 200 };
+  let historyFilters = { kind: "", level: "", channel_id: "", search: "" };
+  let historyRequestSequence = 0;
+  let historySearchTimer = null;
+  let historyReloadPending = false;
+
+  let webhookInspectTimer = null;
+  let webhookInspectSequence = 0;
+
+  let streamerSearch = "";
+  let streamerStatus = "all";
+  let streamerSort = "name";
+  let streamerSelectMode = false;
+  let streamerView = "cards";
+  let selectedStreamerIds = new Set();
+  let streamerSearchTimer = null;
+  let bulkActionBusy = false;
 
   function icon(name) {
     return `<svg viewBox="0 0 24 24" aria-hidden="true">${iconPaths[name] || ""}</svg>`;
@@ -93,6 +136,25 @@
 
   function formatCount(value) {
     return new Intl.NumberFormat().format(Number(value) || 0);
+  }
+
+  function formatBytes(value) {
+    const bytes = Number(value) || 0;
+    if (bytes <= 0) {
+      return "0 B";
+    }
+    const units = ["B", "KB", "MB", "GB"];
+    const exponent = Math.min(units.length - 1, Math.floor(Math.log(bytes) / Math.log(1024)));
+    const scaled = bytes / (1024 ** exponent);
+    return `${scaled >= 10 || exponent === 0 ? Math.round(scaled) : scaled.toFixed(1)} ${units[exponent]}`;
+  }
+
+  function formatDateTime(value) {
+    const time = new Date(value).getTime();
+    if (!Number.isFinite(time)) {
+      return "";
+    }
+    return new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(new Date(time));
   }
 
   function formatInterval(seconds) {
@@ -240,7 +302,10 @@
       data = {};
     }
     if (!response.ok) {
-      throw new Error(data.error || `Request failed (${response.status})`);
+      const error = new Error(data.error || `Request failed (${response.status})`);
+      error.status = response.status;
+      error.data = data;
+      throw error;
     }
     return data;
   }
@@ -270,7 +335,11 @@
     refreshing = true;
     try {
       state = await api("/api/state");
+      if (state.update && !state.update.install_job && installJobActive(updateInstallLastJob)) {
+        state.update = { ...state.update, install_job: updateInstallLastJob };
+      }
       applyTheme(state.config.settings.theme);
+      maybeResumeUpdatePolling();
       if (userIsTyping()) {
         renderChrome();
       } else {
@@ -326,6 +395,12 @@
       case "destinations":
         renderDestinations();
         break;
+      case "history":
+        renderHistory();
+        if (!historyLoaded && !historyLoading) {
+          loadHistory();
+        }
+        break;
       case "settings":
         renderSettings();
         break;
@@ -366,6 +441,7 @@
       overview: ["Overview", "Your community's live alerts at a glance."],
       streamers: ["Streamers", "Every Twitch channel you want to follow."],
       destinations: ["Destinations", "Labelled Discord webhooks and their message styles."],
+      history: ["History", "Every post, edit, skip, and delivery error."],
       settings: ["Settings", "Monitoring, startup, and local data."],
     };
     const [title, subtitle] = views[currentView] || views.overview;
@@ -378,6 +454,9 @@
       actions.push(`<button class="btn btn-primary" data-action="go-add-streamer">${icon("plus")} Add streamer</button>`);
     } else if (currentView === "destinations") {
       actions.push(`<button class="btn btn-primary" data-action="add-destination">${icon("plus")} Add destination</button>`);
+    } else if (currentView === "history") {
+      actions.push(`<button class="btn btn-ghost" data-action="refresh-history" ${historyLoading ? "disabled" : ""}>${historyLoading ? '<span class="spinner dark"></span>' : icon("refresh")} Refresh</button>`);
+      actions.push(`<button class="btn btn-danger" data-action="clear-history">${icon("trash")} Clear history</button>`);
     }
     $("#top-actions").innerHTML = actions.join("");
   }
@@ -387,7 +466,6 @@
     const webhooks = state.config.webhooks || [];
     const live = liveChannels();
     const connectionCount = channels.reduce((total, channel) => total + assignedWebhookIDs(channel).length, 0);
-    const allAssigned = channels.length > 0 && channels.every((channel) => assignedWebhookIDs(channel).length > 0);
 
     const stats = `
       <div class="stats-grid">
@@ -427,10 +505,10 @@
         <div class="hero-art"><img src="/static/mascot.png" alt=""></div>
       </section>`;
 
-    const onboarding = renderOnboarding(channels, webhooks, allAssigned);
+    const onboarding = renderOnboarding(channels, webhooks);
     const liveSection = live.length
       ? `<div class="live-list">${live.map(renderLiveCard).join("")}</div>`
-      : `<div class="empty-state">${icon("play")}<strong>No one is live right now</strong><span>The dashboard refreshes automatically.</span></div>`;
+      : `<div class="empty-state">${icon("play")}<strong>No one is live right now</strong><span>The dashboard refreshes automatically${channels.length ? "" : " once you add a streamer"}.</span>${channels.length ? `<button class="btn btn-small btn-ghost" data-action="check-all">${icon("refresh")} Check now</button>` : `<button class="btn btn-small btn-primary" data-action="go-add-streamer">${icon("plus")} Add your first streamer</button>`}</div>`;
     const activity = renderActivity();
 
     $("#view-overview").innerHTML = `${stats}${hero}${onboarding}
@@ -450,25 +528,95 @@
       </div>`;
   }
 
-  function renderOnboarding(channels, webhooks, allAssigned) {
-    const steps = [
-      [webhooks.length > 0, "Add a Discord destination"],
-      [channels.length > 0, "Add a Twitch streamer"],
-      [allAssigned, "Choose where alerts go"],
-      [!state.config.settings.paused && channels.length > 0, "Leave monitoring running"],
-    ];
-    if (steps.every(([done]) => done)) {
+  function onboardingStorageKey() {
+    return `twitch-live-onboarding-dismissed:${state?.version || "unknown"}`;
+  }
+
+  function onboardingDismissed() {
+    try {
+      return localStorage.getItem(onboardingStorageKey()) === "1";
+    } catch {
+      return false;
+    }
+  }
+
+  function dismissOnboarding() {
+    try {
+      localStorage.setItem(onboardingStorageKey(), "1");
+    } catch {
+      // Ignore storage restrictions.
+    }
+    render();
+  }
+
+  function renderOnboarding(channels, webhooks) {
+    if (onboardingDismissed()) {
       return "";
     }
+    const routed = channels.filter((channel) => assignedWebhookIDs(channel).length > 0).length;
+    const tested = webhooks.some((webhook) => Boolean(webhook.last_success_at));
+    const checked = Boolean(state.last_check);
+    const steps = [
+      {
+        done: webhooks.length > 0,
+        label: "Add a Discord destination",
+        hint: "Paste a webhook URL so alerts have somewhere to go.",
+        action: "add-destination",
+        actionLabel: "Add destination",
+      },
+      {
+        done: channels.length > 0,
+        label: "Add at least one streamer",
+        hint: "Paste a Twitch username, or import the channels you already follow.",
+        action: "go-add-streamer",
+        actionLabel: "Add streamer",
+      },
+      {
+        done: routed > 0,
+        label: "Route a streamer to a destination",
+        hint: "Choose which Discord channels receive each streamer's alerts.",
+        action: "go-routing",
+        actionLabel: "Review routing",
+      },
+      {
+        done: tested,
+        label: "Test a webhook or send a sample",
+        hint: "A successful test confirms Discord can receive your alerts.",
+        action: "go-test-webhook",
+        actionLabel: "Send a test",
+      },
+      {
+        done: checked,
+        label: "Run a check",
+        hint: "Checks every enabled streamer and posts any live alerts.",
+        action: "check-all",
+        actionLabel: "Run check",
+      },
+    ];
+    if (steps.every((step) => step.done)) {
+      return "";
+    }
+    const completed = steps.filter((step) => step.done).length;
     return `
-      <section class="card section">
+      <section class="card section onboarding-card">
         <div class="card-head">
-          <div><h3>Finish setup</h3><p>Four small steps and your community is covered.</p></div>
-          <span class="badge">${steps.filter(([done]) => done).length}/4</span>
+          <div><h3>Finish setup</h3><p>Five small steps and your community is covered.</p></div>
+          <div class="head-actions">
+            <span class="badge">${completed}/${steps.length}</span>
+            <button class="btn btn-small btn-ghost" type="button" data-action="dismiss-onboarding">${icon("x")} Dismiss</button>
+          </div>
         </div>
         <div class="card-body">
           <div class="step-list">
-            ${steps.map(([done, label]) => `<div class="step ${done ? "is-done" : ""}"><span class="step-check">${done ? "✓" : ""}</span><span>${escapeHTML(label)}</span></div>`).join("")}
+            ${steps.map((step) => `
+              <div class="step ${step.done ? "is-done" : ""}">
+                <span class="step-check">${step.done ? "✓" : ""}</span>
+                <div class="step-copy">
+                  <strong>${escapeHTML(step.label)}</strong>
+                  <span>${escapeHTML(step.hint)}</span>
+                </div>
+                ${step.done ? "" : `<button type="button" class="btn btn-small btn-ghost" data-action="${escapeHTML(step.action)}">${escapeHTML(step.actionLabel)}</button>`}
+              </div>`).join("")}
           </div>
         </div>
       </section>`;
@@ -504,7 +652,7 @@
   function renderActivity() {
     const activity = (state.activity || []).slice().reverse().slice(0, 10);
     if (!activity.length) {
-      return `<div class="empty-state">${icon("bell")}<strong>Quiet for now</strong><span>Alerts will show up here.</span></div>`;
+      return `<div class="empty-state">${icon("bell")}<strong>Quiet for now</strong><span>Alerts will show up here.</span><button class="btn btn-small btn-ghost" data-action="go-history">${icon("history")} Open delivery history</button></div>`;
     }
     return `<div class="activity-list">${activity.map((item) => `
       <div class="activity-item">
@@ -513,13 +661,355 @@
       </div>`).join("")}</div>`;
   }
 
-  function renderStreamers() {
+  const HISTORY_KINDS = ["posted", "edited", "cleaned", "skipped", "error"];
+  const HISTORY_LEVELS = ["info", "success", "error"];
+
+  function historyActionLabel(kind) {
+    const labels = {
+      posted: "Posted",
+      edited: "Updated",
+      cleaned: "Cleaned up",
+      skipped: "Skipped",
+      error: "Failed",
+    };
+    return labels[String(kind || "")] || String(kind || "Event");
+  }
+
+  function historyQuery() {
+    const params = new URLSearchParams();
+    params.set("limit", "200");
+    if (historyFilters.kind) {
+      params.set("kind", historyFilters.kind);
+    }
+    if (historyFilters.level) {
+      params.set("level", historyFilters.level);
+    }
+    if (historyFilters.channel_id) {
+      params.set("channel_id", historyFilters.channel_id);
+    }
+    if (historyFilters.search.trim()) {
+      params.set("q", historyFilters.search.trim());
+    }
+    return `/api/history?${params.toString()}`;
+  }
+
+  async function loadHistory() {
+    if (historyLoading) {
+      historyReloadPending = true;
+      return;
+    }
+    historyLoading = true;
+    historyError = "";
+    const sequence = ++historyRequestSequence;
+    if (currentView === "history" && !historyData.entries.length) {
+      render();
+    }
+    try {
+      const data = await api(historyQuery());
+      if (sequence !== historyRequestSequence) {
+        return;
+      }
+      const entries = Array.isArray(data.entries) ? data.entries : [];
+      historyData = {
+        entries,
+        total: data.total != null && Number.isFinite(Number(data.total)) ? Number(data.total) : entries.length,
+        limit: Number(data.limit) || 200,
+      };
+      historyLoaded = true;
+    } catch (error) {
+      if (sequence !== historyRequestSequence) {
+        return;
+      }
+      historyError = error.message || "Could not load delivery history.";
+      historyLoaded = true;
+    } finally {
+      historyLoading = false;
+      if (historyReloadPending) {
+        historyReloadPending = false;
+        loadHistory();
+        return;
+      }
+      if (currentView === "history") {
+        render();
+      }
+    }
+  }
+
+  function refreshHistory() {
+    historyLoaded = false;
+    loadHistory();
+  }
+
+  function filteredHistoryEntries() {
+    const entries = historyData.entries || [];
+    const term = historyFilters.search.trim().toLowerCase();
+    if (!term) {
+      return entries;
+    }
+    return entries.filter((entry) => [
+      entry.channel_name,
+      entry.channel_login,
+      entry.webhook_label,
+      entry.title,
+      entry.game,
+      entry.reason,
+      entry.kind,
+      entry.level,
+    ].join(" ").toLowerCase().includes(term));
+  }
+
+  function renderHistoryRow(entry) {
+    const kind = String(entry.kind || "event");
+    const level = String(entry.level || "info");
+    const channel = entry.channel_name || entry.channel_login || "System";
+    const label = entry.webhook_label || "";
+    const messageURL = safeURL(entry.message_url || "");
+    const time = entry.time || "";
+    const detail = entry.title || entry.game
+      ? `<div class="history-stream">${escapeHTML(truncate(entry.title || entry.game, 160))}${entry.title && entry.game ? ` · ${escapeHTML(entry.game)}` : ""}</div>`
+      : "";
+    return `
+      <article class="history-row">
+        <div class="history-when">
+          <time datetime="${escapeHTML(time)}" title="${escapeHTML(formatDateTime(time))}">${escapeHTML(formatRelative(time))}</time>
+          <span class="history-kind ${escapeHTML(kind)}">${escapeHTML(historyActionLabel(kind))}</span>
+        </div>
+        <div class="history-main">
+          <div class="history-line">
+            <strong>${escapeHTML(channel)}</strong>
+            ${label ? `<span class="history-arrow" aria-hidden="true">→</span><span class="history-destination">${escapeHTML(label)}</span>` : ""}
+            ${messageURL ? `<a class="history-link" href="${escapeHTML(messageURL)}" target="_blank" rel="noopener">${icon("external")} Open in Discord</a>` : ""}
+          </div>
+          ${detail}
+          ${entry.reason ? `<div class="history-reason">${escapeHTML(entry.reason)}</div>` : ""}
+        </div>
+        <span class="badge history-level ${escapeHTML(level)}">${escapeHTML(level)}</span>
+      </article>`;
+  }
+
+  function renderHistory() {
     const channels = state.config.channels || [];
-    const webhooks = state.config.webhooks || [];
+    const entries = filteredHistoryEntries();
+    const total = Number(historyData.total) || 0;
+    const searchActive = historyFilters.search.trim() !== "";
+    const filtersChanged = Boolean(historyFilters.kind || historyFilters.level || historyFilters.channel_id);
+    const kindOptions = HISTORY_KINDS.map((kind) => `<option value="${kind}" ${historyFilters.kind === kind ? "selected" : ""}>${escapeHTML(historyActionLabel(kind))}</option>`).join("");
+    const levelOptions = HISTORY_LEVELS.map((level) => `<option value="${level}" ${historyFilters.level === level ? "selected" : ""}>${escapeHTML(level)}</option>`).join("");
+    const channelOptions = channels.map((channel) => `<option value="${escapeHTML(channel.id)}" ${historyFilters.channel_id === channel.id ? "selected" : ""}>${escapeHTML(channel.display_name || channel.login)}</option>`).join("");
+
+    let content = "";
+    if (historyError) {
+      content = `<div class="warning-box">${icon("bell")} <span>${escapeHTML(historyError)}</span></div>
+        <div class="history-empty-actions"><button class="btn btn-small btn-ghost" data-action="refresh-history">${icon("refresh")} Try again</button></div>`;
+    } else if (historyLoading && !entries.length) {
+      content = `<div class="empty-state">${icon("history")}<strong>Loading delivery history…</strong><span>Reading locally stored records.</span></div>`;
+    } else if (!entries.length) {
+      content = searchActive || filtersChanged
+        ? `<div class="empty-state">${icon("filter")}<strong>No matching deliveries</strong><span>Clear a filter or search a different streamer.</span><button class="btn btn-small btn-ghost" data-action="reset-history-filters">${icon("refresh")} Clear filters</button></div>`
+        : `<div class="empty-state">${icon("history")}<strong>No deliveries yet</strong><span>Posts, edits, skips, and errors appear here after the next check.</span><button class="btn btn-small btn-ghost" data-action="check-all">${icon("refresh")} Run a check</button></div>`;
+    } else {
+      content = `<div class="history-list">${entries.map(renderHistoryRow).join("")}</div>`;
+    }
+
+    $("#view-history").innerHTML = `
+      <section class="card section">
+        <div class="card-head">
+          <div><h3>Delivery history</h3><p>Stored locally. Up to 1,000 recent posts, edits, skips, and errors.</p></div>
+          <span class="badge">${formatCount(searchActive || filtersChanged ? entries.length : total)} record${(searchActive || filtersChanged ? entries.length : total) === 1 ? "" : "s"}</span>
+        </div>
+        <div class="card-body">
+          <div class="history-toolbar">
+            <select id="history-kind" class="select" aria-label="Filter by action">
+              <option value="">All actions</option>
+              ${kindOptions}
+            </select>
+            <select id="history-level" class="select" aria-label="Filter by level">
+              <option value="">All levels</option>
+              ${levelOptions}
+            </select>
+            <select id="history-channel" class="select" aria-label="Filter by streamer">
+              <option value="">All streamers</option>
+              ${channelOptions}
+            </select>
+            <input id="history-search" class="input" value="${escapeHTML(historyFilters.search)}" placeholder="Search streamer, destination, or reason" aria-label="Search delivery history" autocomplete="off">
+          </div>
+          ${content}
+        </div>
+      </section>`;
+  }
+
+  async function clearHistory() {
+    if (!window.confirm("Clear all delivery history? This cannot be undone. Streamers, destinations, and settings are not affected.")) {
+      return;
+    }
+    try {
+      await api("/api/history", { method: "DELETE", body: {} });
+      historyData = { entries: [], total: 0, limit: 200 };
+      historyLoaded = true;
+      historyError = "";
+      render();
+      toast("Delivery history cleared.", "info");
+    } catch (error) {
+      toast(error.message, "error");
+    }
+  }
+
+  async function fetchDiagnostics() {
+    return api("/api/diagnostics");
+  }
+
+  async function copyDiagnostics() {
+    try {
+      const data = await fetchDiagnostics();
+      const text = JSON.stringify(data, null, 2);
+      await navigator.clipboard.writeText(text);
+      toast("Redacted diagnostics copied to the clipboard.", "success");
+    } catch (error) {
+      toast(error?.message || "Could not copy diagnostics. Try Download diagnostics instead.", "error");
+    }
+  }
+
+  async function downloadDiagnostics() {
+    try {
+      const data = await fetchDiagnostics();
+      const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      const date = new Date().toISOString().slice(0, 10);
+      link.href = url;
+      link.download = `twitch-live-diagnostics-${date}.json`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+      toast("Diagnostics downloaded.", "success");
+    } catch (error) {
+      toast(error?.message || "Could not download diagnostics.", "error");
+    }
+  }
+
+  const STREAMER_STATUS_OPTIONS = [
+    ["all", "All statuses"],
+    ["live", "Live now"],
+    ["offline", "Offline"],
+    ["paused", "Paused"],
+    ["error", "Has errors"],
+    ["no-destinations", "No destinations"],
+  ];
+
+  const STREAMER_SORT_OPTIONS = [
+    ["name", "Name A–Z"],
+    ["live", "Live first"],
+    ["recent", "Recently checked"],
+  ];
+
+  function streamerName(channel) {
+    return String(channel?.display_name || channel?.login || channel?.id || "Unknown");
+  }
+
+  function streamerIsLive(channel) {
+    return Boolean(channel?.enabled && statusFor(channel?.id).live);
+  }
+
+  function streamerMatchesStatus(channel) {
+    const status = statusFor(channel?.id);
+    switch (streamerStatus) {
+      case "live":
+        return streamerIsLive(channel);
+      case "offline":
+        return Boolean(channel?.enabled) && !status.live && !status.error;
+      case "paused":
+        return !channel?.enabled;
+      case "error":
+        return Boolean(status.error);
+      case "no-destinations":
+        return assignedWebhookIDs(channel).length === 0;
+      default:
+        return true;
+    }
+  }
+
+  function streamerLastChecked(channel) {
+    const time = new Date(statusFor(channel?.id).last_checked || "").getTime();
+    return Number.isFinite(time) ? time : 0;
+  }
+
+  function filteredStreamerChannels() {
+    const term = streamerSearch.trim().toLowerCase();
+    const channels = (state?.config?.channels || []).filter((channel) => {
+      if (!streamerMatchesStatus(channel)) {
+        return false;
+      }
+      if (!term) {
+        return true;
+      }
+      return `${channel.login || ""} ${channel.display_name || ""}`.toLowerCase().includes(term);
+    });
+    channels.sort((a, b) => {
+      if (streamerSort === "live") {
+        const liveDiff = Number(streamerIsLive(b)) - Number(streamerIsLive(a));
+        if (liveDiff) {
+          return liveDiff;
+        }
+      } else if (streamerSort === "recent") {
+        const checkedDiff = streamerLastChecked(b) - streamerLastChecked(a);
+        if (checkedDiff) {
+          return checkedDiff;
+        }
+      }
+      return streamerName(a).localeCompare(streamerName(b), undefined, { sensitivity: "base" });
+    });
+    return channels;
+  }
+
+  function channelBadgeHTML(channel) {
+    if (!channel?.enabled) {
+      return '<span class="badge badge-paused">Paused</span>';
+    }
+    return statusFor(channel.id).live
+      ? '<span class="badge badge-live">Live</span>'
+      : '<span class="badge badge-offline">Offline</span>';
+  }
+
+  function syncStreamerSelection() {
+    if (!selectedStreamerIds.size) {
+      return;
+    }
+    const known = new Set((state?.config?.channels || []).map((channel) => channel.id));
+    for (const id of Array.from(selectedStreamerIds)) {
+      if (!known.has(id)) {
+        selectedStreamerIds.delete(id);
+      }
+    }
+  }
+
+  function syncStreamerToolbarState() {
+    const selectButton = $('[data-action="toggle-select-mode"]');
+    if (selectButton) {
+      selectButton.classList.toggle("is-active", streamerSelectMode);
+      selectButton.setAttribute("aria-pressed", streamerSelectMode ? "true" : "false");
+    }
+    const viewButton = $('[data-action="toggle-streamer-view"]');
+    if (viewButton) {
+      const matrix = streamerView === "matrix";
+      viewButton.classList.toggle("is-active", matrix);
+      viewButton.setAttribute("aria-pressed", matrix ? "true" : "false");
+    }
+  }
+
+  function renderStreamers() {
+    syncStreamerSelection();
+    const channels = state.config.channels || [];
+    const statusOptions = STREAMER_STATUS_OPTIONS.map(([value, label]) => `<option value="${value}" ${streamerStatus === value ? "selected" : ""}>${escapeHTML(label)}</option>`).join("");
+    const sortOptions = STREAMER_SORT_OPTIONS.map(([value, label]) => `<option value="${value}" ${streamerSort === value ? "selected" : ""}>${escapeHTML(label)}</option>`).join("");
+    const importButton = `<button class="btn btn-small btn-ghost" type="button" data-action="open-import">${icon("download")} Import follows</button>`;
     const addForm = `
       <section class="card section">
         <div class="card-head">
           <div><h3>Add a streamer</h3><p>Paste a Twitch username or a full channel URL.</p></div>
+          <div class="head-actions">
+            ${importButton}
+          </div>
         </div>
         <div class="card-body">
           <form id="add-streamer-form" class="form-row" autocomplete="off">
@@ -530,25 +1020,146 @@
         </div>
       </section>`;
 
-    const list = channels.length
-      ? channels.map((channel) => renderChannelCard(channel, webhooks)).join("")
-      : `<div class="empty-state section">${icon("users")}<strong>No streamers yet</strong><span>Add a Twitch channel above to get started.</span></div>`;
+    // The list section and toolbar are stable hooks for phase-2 bulk controls.
+    $("#view-streamers").innerHTML = `${addForm}<section class="section" id="streamer-list-section">
+      <div class="section-head">
+        <div><h2>Your streamers</h2><p id="streamer-count-line">${formatCount(channels.length)} configured</p></div>
+        <div class="head-actions" id="streamer-bulk-toolbar" data-phase="bulk">
+          <button type="button" class="btn btn-small btn-ghost toolbar-toggle ${streamerSelectMode ? "is-active" : ""}" data-action="toggle-select-mode" aria-pressed="${streamerSelectMode ? "true" : "false"}">${icon("check")} Select</button>
+          <button type="button" class="btn btn-small btn-ghost toolbar-toggle ${streamerView === "matrix" ? "is-active" : ""}" data-action="toggle-streamer-view" aria-pressed="${streamerView === "matrix" ? "true" : "false"}">${icon("send")} Routing</button>
+        </div>
+      </div>
+      <div class="streamer-controls">
+        <input id="streamer-search" class="input" type="search" value="${escapeHTML(streamerSearch)}" placeholder="Search by name or login" aria-label="Search streamers" autocomplete="off" spellcheck="false">
+        <select id="streamer-status" class="select" aria-label="Filter streamers by status">${statusOptions}</select>
+        <select id="streamer-sort" class="select" aria-label="Sort streamers">${sortOptions}</select>
+      </div>
+      <div id="streamer-action-bar"></div>
+      <div id="streamer-results"></div>
+    </section>`;
+    renderStreamerResults();
+  }
 
-    $("#view-streamers").innerHTML = `${addForm}<section class="section"><div class="section-head"><div><h2>Your streamers</h2><p>${channels.length} configured</p></div></div>${list}</section>`;
+  function streamerEmptyState() {
+    return `<div class="empty-state section">${icon("users")}<strong>No streamers yet</strong><span>Add one Twitch channel by hand, or import the channels you already follow — no Twitch sign-in needed.</span><button class="btn btn-small btn-primary" data-action="open-import">${icon("download")} Import follows</button></div>`;
+  }
+
+  function renderStreamerActionBar(visible) {
+    const bar = $("#streamer-action-bar");
+    if (!bar) {
+      return;
+    }
+    if (!streamerSelectMode && !selectedStreamerIds.size) {
+      bar.innerHTML = "";
+      return;
+    }
+    const count = selectedStreamerIds.size;
+    const disabled = count ? "" : " disabled";
+    bar.innerHTML = `
+      <div class="selection-bar" role="region" aria-label="Bulk streamer actions" aria-live="polite">
+        <div class="selection-count"><strong>${formatCount(count)}</strong><span>selected</span></div>
+        <div class="selection-links">
+          <button type="button" class="btn btn-small btn-ghost" data-action="select-visible-streamers"${visible.length ? "" : " disabled"}>${icon("check")} Select all visible</button>
+          <button type="button" class="btn btn-small btn-ghost" data-action="clear-streamer-selection"${disabled}>${icon("x")} Clear</button>
+        </div>
+        <div class="selection-actions">
+          <button type="button" class="btn btn-small btn-ghost" data-action="bulk-enable"${disabled}>${icon("check")} Enable</button>
+          <button type="button" class="btn btn-small btn-ghost" data-action="bulk-disable"${disabled}>${icon("power")} Disable</button>
+          <button type="button" class="btn btn-small btn-ghost" data-action="bulk-assign"${disabled}>${icon("send")} Assign destinations</button>
+          <button type="button" class="btn btn-small btn-ghost" data-action="bulk-unassign"${disabled}>${icon("x")} Unassign destinations</button>
+          <button type="button" class="btn btn-small btn-danger" data-action="bulk-delete"${disabled}>${icon("trash")} Delete</button>
+        </div>
+      </div>`;
+  }
+
+  function renderStreamerResults() {
+    const results = $("#streamer-results");
+    if (!results) {
+      return;
+    }
+    syncStreamerSelection();
+    const channels = state?.config?.channels || [];
+    const webhooks = state?.config?.webhooks || [];
+    const visible = filteredStreamerChannels();
+    const countLine = $("#streamer-count-line");
+    if (countLine) {
+      const filtered = visible.length !== channels.length;
+      countLine.textContent = `${formatCount(channels.length)} configured${filtered ? ` · ${formatCount(visible.length)} shown` : ""}`;
+    }
+    renderStreamerActionBar(visible);
+
+    if (!channels.length) {
+      results.innerHTML = streamerEmptyState();
+      return;
+    }
+    if (!visible.length) {
+      results.innerHTML = `<div class="empty-state">${icon("filter")}<strong>No streamers match</strong><span>Try a different search or status filter.</span><button class="btn btn-small btn-ghost" data-action="reset-streamer-filters">${icon("refresh")} Clear search & filters</button></div>`;
+      return;
+    }
+    if (streamerView === "matrix") {
+      results.innerHTML = renderRoutingMatrix(visible, webhooks);
+      return;
+    }
+    results.innerHTML = visible.map((channel) => renderChannelCard(channel, webhooks)).join("");
+  }
+
+  function renderRoutingMatrix(channels, webhooks) {
+    if (!webhooks.length) {
+      return `<div class="empty-state section">${icon("send")}<strong>No destinations to route to</strong><span>Connect a Discord webhook first, then choose which streamers post there.</span><button class="btn btn-small btn-primary" data-action="add-destination">${icon("plus")} Add destination</button></div>`;
+    }
+    const header = webhooks.map((webhook) => {
+      const stateLabel = webhook.invalid ? "Invalid" : webhook.enabled ? "Active" : "Paused";
+      return `<th scope="col" class="matrix-dest-head">
+        <button type="button" class="matrix-dest-link" data-action="edit-webhook" data-webhook="${escapeHTML(webhook.id)}" title="Edit destination">${escapeHTML(webhook.label)}</button>
+        <span class="matrix-dest-meta">${escapeHTML(stateLabel)}</span>
+      </th>`;
+    }).join("");
+    const rows = channels.map((channel) => {
+      const assigned = new Set(assignedWebhookIDs(channel));
+      const name = streamerName(channel);
+      const selected = selectedStreamerIds.has(channel.id);
+      const selectBox = streamerSelectMode
+        ? `<input type="checkbox" class="matrix-select" data-action="toggle-select-channel" data-channel="${escapeHTML(channel.id)}" ${selected ? "checked" : ""} aria-label="${escapeHTML(`Select ${name} for bulk actions`)}">`
+        : "";
+      const cells = webhooks.map((webhook) => {
+        const label = `Post ${name} to ${webhook.label || "destination"}`;
+        return `<td class="matrix-cell"><label class="matrix-check" title="${escapeHTML(label)}"><input type="checkbox" data-action="toggle-matrix-cell" data-channel="${escapeHTML(channel.id)}" data-webhook="${escapeHTML(webhook.id)}" ${assigned.has(webhook.id) ? "checked" : ""} aria-label="${escapeHTML(label)}"></label></td>`;
+      }).join("");
+      return `<tr class="${selected ? "is-selected" : ""}">
+        <th scope="row" class="matrix-row-head">
+          <div class="matrix-identity">
+            ${selectBox}
+            ${avatarHTML(channel, "avatar-sm")}
+            <div class="matrix-name">
+              <strong>${escapeHTML(name)}</strong>
+              <span>twitch.tv/${escapeHTML(channel.login || "")}</span>
+            </div>
+            ${channelBadgeHTML(channel)}
+            <a class="matrix-row-link" href="https://www.twitch.tv/${escapeHTML(channel.login || "")}" target="_blank" rel="noopener" title="Open on Twitch" aria-label="${escapeHTML(`Open ${name} on Twitch`)}">${icon("external")}</a>
+          </div>
+        </th>
+        ${cells}
+      </tr>`;
+    }).join("");
+    return `<div class="matrix-scroll" tabindex="0" role="region" aria-label="Streamer and destination routing matrix">
+        <table class="matrix-table">
+          <thead><tr><th scope="col" class="matrix-corner">Streamer</th>${header}</tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>
+      <p class="field-hint matrix-hint">Toggle a cell to start or stop posting that streamer's alerts to the destination. Changes save immediately.</p>`;
   }
 
   function renderChannelCard(channel, webhooks) {
     const status = statusFor(channel.id);
     const assigned = new Set(assignedWebhookIDs(channel));
-    const badge = !channel.enabled
-      ? '<span class="badge badge-paused">Paused</span>'
-      : status.live
-        ? '<span class="badge badge-live">Live</span>'
-        : '<span class="badge badge-offline">Offline</span>';
+    const destinationsByWebhook = new Map((channel.destinations || []).map((destination) => [destination.webhook_id, destination]));
+    const badge = channelBadgeHTML(channel);
+    const selected = selectedStreamerIds.has(channel.id);
 
     const destinationControls = webhooks.length
       ? `<div class="destination-checks">${webhooks.map((webhook) => {
-          const destination = (channel.destinations || []).find((item) => item.webhook_id === webhook.id);
+          const destination = destinationsByWebhook.get(webhook.id);
           const customTemplate = Boolean(destination?.template);
           const retryAt = destination?.retry_until ? new Date(destination.retry_until).getTime() : 0;
           const rateLimited = Number.isFinite(retryAt) && retryAt > Date.now();
@@ -577,8 +1188,9 @@
         : "";
 
     return `
-      <article class="channel-card">
+      <article class="channel-card${selected ? " is-selected" : ""}">
         <div class="channel-head">
+          ${streamerSelectMode ? `<label class="card-select" title="Select for bulk actions"><input type="checkbox" data-action="toggle-select-channel" data-channel="${escapeHTML(channel.id)}" ${selected ? "checked" : ""} aria-label="${escapeHTML(`Select ${streamerName(channel)} for bulk actions`)}"></label>` : ""}
           ${avatarHTML(channel, "avatar-lg")}
           <div class="channel-identity">
             <strong>${escapeHTML(channel.display_name || channel.login)}</strong>
@@ -619,11 +1231,208 @@
       </article>`;
   }
 
+  function selectedStreamerChannels() {
+    return Array.from(selectedStreamerIds).map((id) => channelById(id)).filter(Boolean);
+  }
+
+  function toggleStreamerSelection(input) {
+    if (!input?.dataset.channel) {
+      return;
+    }
+    if (input.checked) {
+      selectedStreamerIds.add(input.dataset.channel);
+    } else {
+      selectedStreamerIds.delete(input.dataset.channel);
+    }
+    input.closest(".channel-card, tr")?.classList.toggle("is-selected", input.checked);
+    renderStreamerActionBar(filteredStreamerChannels());
+  }
+
+  function clearStreamerSelection() {
+    selectedStreamerIds.clear();
+    $$('#streamer-results input[data-action="toggle-select-channel"]').forEach((input) => {
+      input.checked = false;
+    });
+    $$("#streamer-results .is-selected").forEach((element) => element.classList.remove("is-selected"));
+    renderStreamerActionBar(filteredStreamerChannels());
+  }
+
+  function selectVisibleStreamers() {
+    for (const channel of filteredStreamerChannels()) {
+      selectedStreamerIds.add(channel.id);
+    }
+    renderStreamerResults();
+  }
+
+  function resetStreamerFilters() {
+    streamerSearch = "";
+    streamerStatus = "all";
+    streamerSort = "name";
+    renderStreamers();
+  }
+
+  function openBulkDestinationModal(action) {
+    const assign = action === "assign";
+    const selected = selectedStreamerChannels();
+    if (!selected.length) {
+      toast("Select at least one streamer first.", "error");
+      return;
+    }
+    const webhooks = state?.config?.webhooks || [];
+    if (!webhooks.length) {
+      toast("Add a Discord destination first, then route streamers to it.", "info");
+      switchView("destinations");
+      return;
+    }
+    const options = webhooks.map((webhook) => {
+      const connected = selected.filter((channel) => assignedWebhookIDs(channel).includes(webhook.id)).length;
+      const checked = assign ? webhooks.length === 1 : connected > 0;
+      return `<label class="destination-check">
+        <input type="checkbox" name="bulk-webhook" value="${escapeHTML(webhook.id)}" ${checked ? "checked" : ""}>
+        <span>${escapeHTML(webhook.label)}</span>
+        ${webhook.enabled ? "" : '<span class="badge badge-disabled">Paused</span>'}
+        ${connected ? `<span class="destination-count">${connected}/${selected.length}</span>` : ""}
+      </label>`;
+    }).join("");
+    openModal(`
+      <div class="modal-head">
+        <div>
+          <h2>${assign ? "Assign destinations" : "Unassign destinations"}</h2>
+          <p>${formatCount(selected.length)} streamer${selected.length === 1 ? "" : "s"} selected. ${assign ? "Alerts will also post to every destination you check." : "Alerts will stop posting to every destination you check."}</p>
+        </div>
+        <button class="modal-close" data-action="close-modal" aria-label="Close">${icon("x")}</button>
+      </div>
+      <form id="bulk-route-form" data-bulk-action="${assign ? "assign" : "unassign"}">
+        <div class="modal-body">
+          <div class="destination-checks bulk-route-list">${options}</div>
+          <p class="field-hint" style="margin-top:10px">${assign ? "A destination already assigned is left unchanged." : "Only the checked destinations are removed; other routing stays."}</p>
+        </div>
+        <div class="modal-foot">
+          <span class="field-hint">${assign ? "Assign" : "Unassign"} destinations for the selected streamers.</span>
+          <div class="modal-foot-right">
+            <button type="button" class="btn btn-ghost" data-action="close-modal">Cancel</button>
+            <button type="submit" class="btn ${assign ? "btn-primary" : "btn-danger"}">${icon(assign ? "send" : "x")} ${assign ? "Assign destinations" : "Unassign destinations"}</button>
+          </div>
+        </div>
+      </form>`, { narrow: true });
+  }
+
+  function bulkActionResultMessage(action, response, fallbackCount, destinationCount) {
+    const updated = Number(response?.updated) || 0;
+    const removed = Number(response?.removed) || 0;
+    const count = (action === "delete" ? removed : updated) || fallbackCount;
+    const suffix = count === 1 ? "" : "s";
+    const destinations = formatCount(destinationCount || 0);
+    switch (action) {
+      case "enable":
+        return `Enabled ${count} streamer${suffix}.`;
+      case "disable":
+        return `Disabled ${count} streamer${suffix}.`;
+      case "delete":
+        return `Removed ${count} streamer${suffix}.`;
+      case "assign":
+        return `Assigned ${count} streamer${suffix} to ${destinations} destination${Number(destinationCount) === 1 ? "" : "s"}.`;
+      case "unassign":
+        return `Unassigned ${count} streamer${suffix} from ${destinations} destination${Number(destinationCount) === 1 ? "" : "s"}.`;
+      default:
+        return "Streamers updated.";
+    }
+  }
+
+  async function runBulkAction(action, webhookIDs = []) {
+    if (bulkActionBusy) {
+      return;
+    }
+    syncStreamerSelection();
+    const ids = Array.from(selectedStreamerIds).filter((id) => Boolean(channelById(id)));
+    if (!ids.length) {
+      toast("Select at least one streamer first.", "error");
+      return;
+    }
+    if (action === "delete") {
+      const names = ids.slice(0, 4).map((id) => streamerName(channelById(id))).filter(Boolean);
+      const extra = ids.length > names.length ? ` and ${ids.length - names.length} more` : "";
+      const named = names.length ? ` (${names.join(", ")}${extra})` : "";
+      if (!window.confirm(`Remove ${ids.length} streamer${ids.length === 1 ? "" : "s"}${named}? This cannot be undone. Destinations stay, but their routing and stream status are deleted.`)) {
+        return;
+      }
+    }
+    bulkActionBusy = true;
+    try {
+      const response = await api("/api/channels/bulk-action", {
+        method: "POST",
+        body: { channel_ids: ids, action, webhook_ids: webhookIDs },
+      });
+      if (response?.state) {
+        state = response.state;
+      } else {
+        await refresh(true);
+      }
+      if (action === "delete") {
+        selectedStreamerIds.clear();
+      } else {
+        syncStreamerSelection();
+      }
+      if (action === "assign" || action === "unassign") {
+        closeModal();
+      }
+      render();
+      toast(bulkActionResultMessage(action, response, ids.length, webhookIDs.length), action === "delete" ? "info" : "success");
+    } catch (error) {
+      toast(error.message, "error");
+    } finally {
+      bulkActionBusy = false;
+    }
+  }
+
+  async function toggleMatrixCell(input) {
+    const channel = channelById(input?.dataset.channel);
+    const webhookID = input?.dataset.webhook;
+    if (!channel || !webhookID) {
+      if (input) {
+        input.checked = !input.checked;
+      }
+      return;
+    }
+    const webhookIDs = new Set(assignedWebhookIDs(channel));
+    if (input.checked) {
+      webhookIDs.add(webhookID);
+    } else {
+      webhookIDs.delete(webhookID);
+    }
+    input.disabled = true;
+    try {
+      const response = await api(`/api/channels/${encodeURIComponent(channel.id)}/destinations`, {
+        method: "PUT",
+        body: { webhook_ids: Array.from(webhookIDs) },
+      });
+      if (response?.state) {
+        state = response.state;
+      } else {
+        // Defensive fallback for older builds that return only a status body.
+        const target = channelById(channel.id);
+        if (target) {
+          const existing = new Map((target.destinations || []).map((destination) => [destination.webhook_id, destination]));
+          target.destinations = Array.from(webhookIDs).map((id) => existing.get(id) || { webhook_id: id });
+        }
+      }
+      const saved = channelById(channel.id);
+      if (saved) {
+        input.checked = new Set(assignedWebhookIDs(saved)).has(webhookID);
+      }
+    } catch (error) {
+      input.checked = !input.checked;
+      toast(error.message, "error");
+    } finally {
+      input.disabled = false;
+    }
+  }
+
   function renderDestinations() {
     const webhooks = state.config.webhooks || [];
     const cards = webhooks.length
       ? webhooks.map((webhook) => renderDestinationCard(webhook)).join("")
-      : `<div class="empty-state">${icon("send")}<strong>No Discord destinations yet</strong><span>Add a webhook for each Discord channel or server you want to post into.</span></div>`;
+      : `<div class="empty-state">${icon("send")}<strong>No Discord destinations yet</strong><span>Add a webhook for each Discord channel or server you want to post into.</span><button class="btn btn-small btn-primary" data-action="add-destination">${icon("plus")} Add destination</button></div>`;
     $("#view-destinations").innerHTML = `
       <div class="section-head">
         <div><h2>Discord destinations</h2><p>Each destination can have its own label, webhook, and message style.</p></div>
@@ -690,21 +1499,329 @@
       </article>`;
   }
 
+  const INSTALL_ACTIVE_STATUSES = ["downloading", "verifying", "applying", "restarting"];
+
+  function installJobActive(job) {
+    return Boolean(job && INSTALL_ACTIVE_STATUSES.includes(String(job.status || "")));
+  }
+
+  function installJobPercent(job) {
+    if (!job) {
+      return 0;
+    }
+    const total = Number(job.total) || 0;
+    const bytes = Number(job.bytes) || 0;
+    let percent = 0;
+    if (total > 0) {
+      percent = (bytes / total) * 100;
+    } else {
+      const progress = Number(job.progress) || 0;
+      percent = progress > 0 && progress <= 1 ? progress * 100 : progress;
+    }
+    if (job.status === "done") {
+      percent = 100;
+    }
+    return Math.max(0, Math.min(100, Math.round(percent)));
+  }
+
+  function installJobLabel(job) {
+    const labels = {
+      downloading: "Downloading update",
+      verifying: "Verifying checksum",
+      applying: "Installing update",
+      restarting: "Restarting…",
+      done: "Update installed",
+      error: "Update failed",
+    };
+    return labels[String(job?.status || "")] || "Update";
+  }
+
+  function installModeLabel(mode) {
+    const labels = {
+      in_place: "In place",
+      app_bundle: "macOS app bundle",
+      appimage: "AppImage",
+      guided: "Guided / manual",
+      unsupported: "Manual download",
+    };
+    return labels[String(mode || "")] || (mode ? String(mode) : "Not reported");
+  }
+
+  function renderInstallJob(job) {
+    if (!job || !job.status || job.status === "idle") {
+      return "";
+    }
+    const percent = installJobPercent(job);
+    const bytes = Number(job.bytes) || 0;
+    const total = Number(job.total) || 0;
+    const size = total > 0 ? `${formatBytes(bytes)} of ${formatBytes(total)}` : (bytes > 0 ? formatBytes(bytes) : "");
+    const statusIcon = job.status === "done"
+      ? icon("check")
+      : job.status === "error"
+        ? icon("bell")
+        : '<span class="spinner dark"></span>';
+    const detail = job.status === "error" ? (job.error || job.message || "") : (job.message || "");
+    const restarting = job.status === "restarting";
+    return `
+      <div class="install-job ${escapeHTML(job.status)}">
+        <div class="install-job-head">
+          <span class="install-job-state">${statusIcon} ${escapeHTML(installJobLabel(job))}</span>
+          <span class="meta">${percent}%</span>
+        </div>
+        <div class="progress" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${percent}" aria-label="Update progress">
+          <span class="progress-bar" style="width:${percent}%"></span>
+        </div>
+        <div class="install-job-meta">
+          <span>${escapeHTML(size)}</span>
+          ${detail ? `<span>${escapeHTML(detail)}</span>` : ""}
+        </div>
+        ${restarting ? `<div class="restart-note"><span class="spinner dark"></span><span>The app is restarting. This page reconnects automatically and shows the new version.</span></div>` : ""}
+      </div>`;
+  }
+
   function renderUpdateStatus(update) {
     const current = escapeHTML(update.current_version || state.version);
+    const latest = update.latest_version ? escapeHTML(update.latest_version) : "";
+    const assetName = update.asset_name ? escapeHTML(update.asset_name) : "";
+    const assetSize = Number(update.asset_size) || 0;
+    const mode = installModeLabel(update.install_mode);
+    const reason = update.install_reason ? escapeHTML(update.install_reason) : "";
+    const job = update.install_job || null;
+
+    let html = "";
     if (update.disabled) {
-      return { html: `<div class="meta">Update checks are off. You are on version <strong>${current}</strong>.</div>` };
+      html = `<div class="meta">Update checks are off. You are on version <strong>${current}</strong>.</div>`;
+    } else if (update.error) {
+      html = `<div class="warning-box">${icon("bell")} <span>Could not check for updates: ${escapeHTML(update.error)}</span></div>`;
+    } else if (update.update_available) {
+      html = `<div class="warning-box">${icon("download")} <span>Version <strong>${latest}</strong> is available. You are on <strong>${current}</strong>. ${update.can_self_update ? "The app verifies the download checksum, installs it, and restarts. Your settings are preserved." : "This install needs a manual download; your settings are preserved."}</span></div>`;
+    } else if (update.latest_version) {
+      html = `<div class="meta">You are on the latest version, <strong>${current}</strong>${update.checked_at ? ` · checked ${escapeHTML(formatRelative(update.checked_at))}` : ""}.</div>`;
+    } else {
+      html = `<div class="meta">You are on version <strong>${current}</strong>. No update check has run yet.</div>`;
     }
-    if (update.error) {
-      return { html: `<div class="warning-box">${icon("bell")} <span>Could not check for updates: ${escapeHTML(update.error)}</span></div>` };
+
+    const facts = [
+      ["Current version", current],
+      ["Latest version", latest || "Not checked"],
+      ["Release asset", assetName ? `${assetName}${assetSize ? ` · ${formatBytes(assetSize)}` : ""}` : "Not reported"],
+      ["Install method", `${escapeHTML(mode)}${reason ? ` — ${reason}` : ""}`],
+    ];
+    html += `<div class="update-facts">
+      ${facts.map(([label, value]) => `<div class="update-fact"><span>${escapeHTML(label)}</span><strong>${value}</strong></div>`).join("")}
+    </div>`;
+    html += renderInstallJob(job);
+    if (update.update_available && update.can_self_update === false && update.install_reason) {
+      html += `<div class="field-hint" style="margin-top:10px">Manual fallback: download the release asset, quit the app, and replace the existing file. Your settings live in a separate data folder.</div>`;
     }
-    if (update.update_available) {
-      return { html: `<div class="warning-box">${icon("download")} <span>Version <strong>${escapeHTML(update.latest_version)}</strong> is available. You are on <strong>${current}</strong>. Installed settings are preserved when you upgrade.</span></div>` };
+    return { html };
+  }
+
+  function renderUpdateActions(update) {
+    const activeJob = installJobActive(update.install_job);
+    const installable = Boolean(update.update_available && update.can_self_update);
+    const disabled = update.disabled ? "disabled" : "";
+    return `
+      <button class="btn btn-ghost" data-action="check-updates" ${disabled || activeJob ? "disabled" : ""}>${icon("refresh")} Check now</button>
+      ${installable
+        ? `<button class="btn btn-primary" data-action="install-update" ${activeJob ? "disabled" : ""}>${activeJob ? '<span class="spinner"></span> Installing…' : `${icon("download")} Install ${escapeHTML(update.latest_version || "update")}`}</button>`
+        : update.update_available && update.download_url
+          ? `<a class="btn btn-primary" href="${escapeHTML(safeURL(update.download_url))}" target="_blank" rel="noopener">${icon("download")} Download ${escapeHTML(update.latest_version || "update")}</a>`
+          : ""}
+      ${update.release_url ? `<a class="btn btn-ghost" href="${escapeHTML(safeURL(update.release_url))}" target="_blank" rel="noopener">${icon("external")} Release notes</a>` : ""}`;
+  }
+
+  function updateInstallUI() {
+    if (!state || currentView !== "settings") {
+      return;
     }
-    if (update.latest_version) {
-      return { html: `<div class="meta">You are on the latest version, <strong>${current}</strong>${update.checked_at ? ` · checked ${escapeHTML(formatRelative(update.checked_at))}` : ""}.</div>` };
+    const body = $("#update-card-body");
+    const actions = $("#update-card-actions");
+    if (body && actions) {
+      const update = state.update || { current_version: state.version };
+      body.innerHTML = renderUpdateStatus(update).html;
+      actions.innerHTML = renderUpdateActions(update);
+    } else if (!userIsTyping()) {
+      render();
     }
-    return { html: `<div class="meta">You are on version <strong>${current}</strong>. No update check has run yet.</div>` };
+  }
+
+  function scheduleUpdateInstallPoll(delay = 700) {
+    clearTimeout(updateInstallTimer);
+    updateInstallTimer = setTimeout(pollUpdateInstall, delay);
+  }
+
+  function maybeResumeUpdatePolling() {
+    const job = state?.update?.install_job;
+    if (!job || !job.status) {
+      return;
+    }
+    if (job.status === "restarting") {
+      updateInstallRestartRequested = true;
+      beginRestartWatch();
+      return;
+    }
+    if (installJobActive(job) && !updateInstallTimer && !awaitingRestart) {
+      updateInstallRestartRequested = true;
+      updateInstallStartedAt = updateInstallStartedAt || Date.now();
+      scheduleUpdateInstallPoll(700);
+    }
+  }
+
+  function beginRestartWatch() {
+    if (awaitingRestart) {
+      return;
+    }
+    awaitingRestart = true;
+    restartSawDisconnect = false;
+    restartBaseVersion = state?.version || "";
+    if (!updateInstallStartedAt) {
+      updateInstallStartedAt = Date.now();
+    }
+    clearTimeout(updateInstallTimer);
+    updateInstallTimer = null;
+    if (state) {
+      const currentJob = state.update?.install_job || {};
+      state.update = {
+        ...(state.update || {}),
+        install_job: { ...currentJob, status: "restarting", message: currentJob.message || "Restarting the app…" },
+      };
+    }
+    updateInstallUI();
+    clearTimeout(restartPollTimer);
+    restartPollTimer = setTimeout(checkRestarted, 1200);
+  }
+
+  async function checkRestarted() {
+    restartPollTimer = null;
+    const startedAt = updateInstallStartedAt || Date.now();
+    updateInstallStartedAt = startedAt;
+    try {
+      const data = await api("/api/state");
+      const versionChanged = Boolean(restartBaseVersion && data.version && data.version !== restartBaseVersion);
+      if (!versionChanged && !restartSawDisconnect && Date.now() - startedAt < 180000) {
+        restartPollTimer = setTimeout(checkRestarted, 1500);
+        return;
+      }
+      state = data;
+      applyTheme(state.config.settings.theme);
+      awaitingRestart = false;
+      updateInstallStartedAt = 0;
+      updateInstallLastJob = null;
+      updateInstallRestartRequested = false;
+      restartBaseVersion = "";
+      restartSawDisconnect = false;
+      render();
+      toast(`Updated to version ${state.version}.`, "success");
+    } catch {
+      restartSawDisconnect = true;
+      if (Date.now() - startedAt < 180000) {
+        restartPollTimer = setTimeout(checkRestarted, 1500);
+      } else {
+        awaitingRestart = false;
+        toast("The app is taking a while to restart. Reload this page when it is back.", "info");
+      }
+    }
+  }
+
+  function applyInstallJob(job) {
+    updateInstallLastJob = job && job.status && job.status !== "idle" ? job : null;
+    if (!state) {
+      return;
+    }
+    state.update = {
+      ...(state.update || { current_version: state.version }),
+      install_job: updateInstallLastJob,
+    };
+    updateInstallUI();
+  }
+
+  async function pollUpdateInstall() {
+    updateInstallTimer = null;
+    if (!state) {
+      return;
+    }
+    let job = null;
+    try {
+      if (!updateInstallEndpointMissing) {
+        try {
+          job = await api("/api/updates/install");
+        } catch (error) {
+          if (error.status === 404 || error.status === 405) {
+            updateInstallEndpointMissing = true;
+          } else if (installJobActive(updateInstallLastJob)) {
+            beginRestartWatch();
+            return;
+          } else {
+            throw error;
+          }
+        }
+      }
+      if (updateInstallEndpointMissing) {
+        const update = await api("/api/updates");
+        state.update = update || state.update;
+        job = update?.install_job || { status: "idle" };
+      }
+      if (job) {
+        applyInstallJob(job);
+      }
+      if (job && job.status === "restarting") {
+        beginRestartWatch();
+        return;
+      }
+      if (installJobActive(job)) {
+        scheduleUpdateInstallPoll(700);
+        return;
+      }
+      if (job && job.status === "done") {
+        if (updateInstallRestartRequested) {
+          // A successful restart-enabled install finishes with "done" and then
+          // the old process exits. Wait for the dashboard to come back.
+          applyInstallJob(job);
+          beginRestartWatch();
+          return;
+        }
+        toast("Update installed. Refreshing version details.", "success");
+        setTimeout(() => refresh(true), 600);
+      }
+    } catch (error) {
+      if (installJobActive(updateInstallLastJob)) {
+        beginRestartWatch();
+      } else {
+        toast(`Could not read update progress: ${error.message}`, "error");
+      }
+    }
+  }
+
+  async function installUpdate() {
+    updateInstallStartedAt = Date.now();
+    awaitingRestart = false;
+    updateInstallRestartRequested = true;
+    const startButton = $("#update-card-actions [data-action='install-update']");
+    if (startButton) {
+      startButton.disabled = true;
+      startButton.innerHTML = '<span class="spinner"></span> Starting…';
+    }
+    try {
+      const response = await api("/api/updates/install", { method: "POST", body: { restart: true } });
+      const job = response?.install_job || response?.job || (response?.status ? response : null);
+      if (response && response.current_version && !response.install_job) {
+        state.update = response;
+      }
+      if (job) {
+        applyInstallJob(job);
+      }
+      scheduleUpdateInstallPoll(500);
+      toast("Downloading and verifying the update…", "info");
+    } catch (error) {
+      if (error.status === 409) {
+        toast("An update is already in progress. Showing its progress.", "info");
+        scheduleUpdateInstallPoll(300);
+        return;
+      }
+      toast(error.message, "error");
+      updateInstallUI();
+    }
   }
 
   function renderSettings() {
@@ -757,7 +1874,7 @@
                 </div>
                 ${startAtLogin}
                 <div class="switch-row">
-                  <div class="switch-copy"><strong>Check GitHub for updates</strong><span>The app never auto-downloads a release. It only reports the latest version.</span></div>
+                  <div class="switch-copy"><strong>Check GitHub for updates</strong><span>Reports new releases. Installs only start when you click Install, and the checksum is verified first.</span></div>
                   <label class="switch"><input id="settings-update-check" type="checkbox" ${settings.disable_update_check ? "" : "checked"}><span class="switch-track"></span></label>
                 </div>
               </div>
@@ -783,14 +1900,10 @@
             </div>
           </section>
           <section class="card" style="margin-top:16px">
-            <div class="card-head"><div><h3>Updates</h3><p>Version status from GitHub releases.</p></div></div>
+            <div class="card-head"><div><h3>Updates</h3><p>Verified installs from GitHub releases.</p></div></div>
             <div class="card-body">
-              <div class="update-status">${updateStatus.html}</div>
-              <div class="settings-actions">
-                <button class="btn btn-ghost" data-action="check-updates" ${update.disabled ? "disabled" : ""}>${icon("refresh")} Check now</button>
-                ${update.update_available && update.download_url ? `<a class="btn btn-primary" href="${escapeHTML(safeURL(update.download_url))}" target="_blank" rel="noopener">${icon("download")} Download ${escapeHTML(update.latest_version || "update")}</a>` : ""}
-                ${update.release_url ? `<a class="btn btn-ghost" href="${escapeHTML(safeURL(update.release_url))}" target="_blank" rel="noopener">${icon("external")} Release notes</a>` : ""}
-              </div>
+              <div class="update-status" id="update-card-body">${updateStatus.html}</div>
+              <div class="settings-actions" id="update-card-actions">${renderUpdateActions(update)}</div>
             </div>
           </section>
           <section class="card" style="margin-top:16px">
@@ -817,6 +1930,17 @@
                 <div><strong>Twitch Live to Discord</strong><p>Version ${escapeHTML(state.version)} · Local only</p></div>
               </div>
               <p class="field-hint" style="margin:14px 0 0">Not affiliated with Twitch or Discord. Twitch and Discord are trademarks of their respective owners.</p>
+            </div>
+          </section>
+          <section class="card" style="margin-top:16px">
+            <div class="card-head"><div><h3>Diagnostics</h3><p>Redacted app health for troubleshooting.</p></div></div>
+            <div class="card-body">
+              <p class="field-hint" style="margin:0">The bundle includes versions, platform, channel and destination counts, recent errors, and delivery history. Webhook URLs, tokens, and other secrets are never included.</p>
+              <div class="settings-actions">
+                <button class="btn btn-ghost" data-action="copy-diagnostics">${icon("copy")} Copy diagnostics</button>
+                <button class="btn btn-ghost" data-action="download-diagnostics">${icon("download")} Download diagnostics</button>
+                <button class="btn btn-ghost" data-action="go-history">${icon("history")} Open history</button>
+              </div>
             </div>
           </section>
         </div>
@@ -989,6 +2113,17 @@
 
   function closeModal() {
     const root = $("#modal-root");
+    if (twitchImportTimer) {
+      clearTimeout(twitchImportTimer);
+      twitchImportTimer = null;
+    }
+    if (twitchImportState) {
+      const importID = twitchImportState.id;
+      twitchImportState = null;
+      if (importID) {
+        api(`/api/twitch/imports/${importID}`, { method: "DELETE", body: {} }).catch(() => {});
+      }
+    }
     if (!root.innerHTML) {
       return;
     }
@@ -1298,9 +2433,61 @@
     if (cleanupMode) {
       cleanupMode.addEventListener("change", syncEndedFields);
     }
+    const urlField = $("#wh-url");
+    if (urlField) {
+      urlField.addEventListener("input", scheduleWebhookInspect);
+      urlField.addEventListener("blur", () => {
+        clearTimeout(webhookInspectTimer);
+        webhookInspectTimer = null;
+        inspectWebhookURL();
+      });
+    }
     syncEndedFields();
     updateCounters();
     schedulePreview();
+  }
+
+  function scheduleWebhookInspect() {
+    clearTimeout(webhookInspectTimer);
+    webhookInspectTimer = setTimeout(() => {
+      webhookInspectTimer = null;
+      inspectWebhookURL();
+    }, 650);
+  }
+
+  async function inspectWebhookURL() {
+    const urlField = $("#wh-url");
+    const labelField = $("#wh-label");
+    if (!urlField || !labelField) {
+      return;
+    }
+    const raw = urlField.value.trim();
+    if (!raw || labelField.value.trim()) {
+      return;
+    }
+    if (!/^https:\/\/(?:[a-z0-9-]+\.)?discord(?:app)?\.com\/api\/webhooks\/\d+\//i.test(raw)) {
+      return;
+    }
+    const sequence = ++webhookInspectSequence;
+    try {
+      const data = await api("/api/webhooks/inspect", { method: "POST", body: { url: raw } });
+      if (sequence !== webhookInspectSequence) {
+        return;
+      }
+      const currentLabel = $("#wh-label");
+      if (!currentLabel || currentLabel.value.trim()) {
+        return;
+      }
+      const suggestion = String(data?.name || "").trim();
+      if (!suggestion) {
+        return;
+      }
+      currentLabel.value = truncate(suggestion, 80);
+      currentLabel.dispatchEvent(new Event("input", { bubbles: true }));
+      toast("Label suggested from Discord. You can edit it.", "info");
+    } catch {
+      // The inspect endpoint is optional; failing silently keeps manual entry intact.
+    }
   }
 
   function openRouteTemplateModal(channelId, webhookId) {
@@ -1955,6 +3142,649 @@
     `, { narrow: true });
   }
 
+  const RESERVED_TWITCH_PATHS = new Set([
+    "directory", "videos", "settings", "subscriptions", "wallet", "friends", "inbox",
+    "drops", "store", "jobs", "turbo", "search", "login", "signup", "download",
+    "prime", "creatorcamp", "legal", "privacy", "terms", "following", "browse",
+    "esports", "teams", "about", "careers", "blog", "partners", "affiliates",
+    "developers", "help", "support", "security", "p", "embed", "oauth2", "api",
+    "collections", "dashboard", "inventory", "messages", "whispers", "channel",
+    "video", "clip", "clips", "schedule", "faq", "gift", "redeem", "activate",
+    "popout", "moderator", "user", "account", "payments", "purchases", "privacy-center",
+  ]);
+
+  function normalizeImportLogin(value) {
+    let login = String(value || "").trim().toLowerCase();
+    login = login.replace(/^@/, "");
+    login = login.replace(/^https?:\/\/(?:www\.)?twitch\.tv\//, "");
+    login = login.replace(/^twitch\.tv\//, "");
+    login = login.replace(/[/?#].*$/, "");
+    login = login.replace(/^#/, "");
+    if (!/^[a-z0-9_]{1,25}$/.test(login)) {
+      return "";
+    }
+    return login;
+  }
+
+  function collectImportLogins(value, add) {
+    if (value == null) {
+      return;
+    }
+    if (typeof value === "string") {
+      add(value);
+      return;
+    }
+    if (Array.isArray(value)) {
+      value.forEach((item) => collectImportLogins(item, add));
+      return;
+    }
+    if (typeof value === "object") {
+      let walkedIdentity = false;
+      for (const key of ["login", "channel_login", "username", "user"]) {
+        if (typeof value[key] === "string") {
+          add(value[key]);
+          walkedIdentity = true;
+        }
+      }
+      for (const key of ["logins", "follows", "following", "followed_channels", "channels", "streamers", "data", "items"]) {
+        if (value[key]) {
+          collectImportLogins(value[key], add);
+        }
+      }
+      if (!walkedIdentity) {
+        for (const key of ["name", "display_name", "channel"]) {
+          if (typeof value[key] === "string") {
+            add(value[key]);
+            walkedIdentity = true;
+          }
+        }
+      }
+    }
+  }
+
+  function parseImportLogins(rawText) {
+    const text = String(rawText || "");
+    const found = new Set();
+    const add = (value) => {
+      const login = normalizeImportLogin(value);
+      if (login && !RESERVED_TWITCH_PATHS.has(login)) {
+        found.add(login);
+      }
+    };
+    const trimmed = text.trim();
+    let parsedJSON = false;
+    if (trimmed.startsWith("[") || trimmed.startsWith("{")) {
+      try {
+        collectImportLogins(JSON.parse(trimmed), add);
+        parsedJSON = true;
+      } catch {
+        // Fall back to text scanning below.
+      }
+    }
+    if (!parsedJSON) {
+      for (const match of text.matchAll(/twitch\.tv\/([A-Za-z0-9_]{1,25})/gi)) {
+        add(match[1]);
+      }
+      for (const match of text.matchAll(/href=["']\/([A-Za-z0-9_]{1,25})["']/gi)) {
+        add(match[1]);
+      }
+      const looksHTML = /<a\b|<html\b|href\s*=/i.test(text);
+      if (!looksHTML) {
+        for (const token of text.split(/[\s,;|<>"'`]+/)) {
+          add(token);
+        }
+      }
+    }
+    return Array.from(found);
+  }
+
+  function updateImportParsedCount() {
+    const text = $("#import-logins")?.value || "";
+    const count = parseImportLogins(text).length;
+    const label = $("#import-parsed-count");
+    if (label) {
+      label.textContent = `${formatCount(count)} username${count === 1 ? "" : "s"}`;
+    }
+    const submit = $("#import-submit");
+    if (submit) {
+      submit.disabled = count === 0;
+    }
+    return count;
+  }
+
+  function openImportModal(tab = "helper", prefill = "") {
+    importModalTab = tab === "paste" || tab === "signin" ? tab : "helper";
+    importFileSource = false;
+    const webhooks = state?.config?.webhooks || [];
+    const signInEnabled = Boolean(state?.twitch_connect_enabled);
+    const autoAssign = webhooks.length === 1;
+    openModal(`
+      <div class="modal-head">
+        <div><h2>Import follows</h2><p>Bring your Twitch follows in without sharing a password or Twitch token.</p></div>
+        <button class="modal-close" data-action="close-modal" aria-label="Close">${icon("x")}</button>
+      </div>
+      <form id="import-form">
+        <div class="modal-body">
+          <div class="segmented" role="tablist" aria-label="Import method">
+            <button type="button" class="segment" role="tab" id="import-tab-helper" aria-controls="import-panel-helper" data-action="import-tab" data-tab="helper">${icon("shield")} No sign-in</button>
+            <button type="button" class="segment" role="tab" id="import-tab-paste" aria-controls="import-panel-paste" data-action="import-tab" data-tab="paste">${icon("upload")} Paste a list</button>
+            <button type="button" class="segment" role="tab" id="import-tab-signin" aria-controls="import-panel-signin" data-action="import-tab" data-tab="signin">${icon("download")} Sign in to Twitch</button>
+          </div>
+
+          <div class="import-panel is-hidden" id="import-panel-helper" role="tabpanel" aria-labelledby="import-tab-helper" data-import-panel="helper">
+            <div class="import-note">${icon("shield")}<div><strong>No token ever reaches this app.</strong><span>The helper reads your Twitch following page inside your existing browser session. You copy the list and paste it here.</span></div></div>
+            <ol class="helper-steps">
+              <li><span>Open the follows helper in a new tab.</span><a class="btn btn-small btn-ghost" href="/follows-helper" target="_blank" rel="noopener">${icon("external")} Open helper</a></li>
+              <li><span>Drag the bookmarklet below to your bookmarks bar. You can also copy the code and create a bookmark manually.</span></li>
+              <li><span>Open <a href="https://www.twitch.tv/directory/following/channels" target="_blank" rel="noopener">your following page</a>, run the bookmarklet, copy its list, then choose <strong>Paste a list</strong>.</span></li>
+            </ol>
+            <div class="bookmarklet-box">
+              <div class="bookmarklet-row">
+                <a id="bookmarklet-link" class="btn btn-primary bookmarklet-link" role="button" aria-disabled="true">${icon("link")} Drag to bookmarks</a>
+                <button type="button" class="btn btn-ghost" data-action="copy-bookmarklet">${icon("copy")} Copy code</button>
+                <button type="button" class="btn btn-ghost" data-action="import-tab" data-tab="paste">${icon("upload")} Paste instead</button>
+              </div>
+              <span class="field-hint" id="bookmarklet-status">Loading the bookmarklet…</span>
+              <textarea id="bookmarklet-code" class="textarea input-mono import-code" rows="3" readonly placeholder="Bookmarklet code appears here" aria-label="Bookmarklet code"></textarea>
+            </div>
+            <p class="field-hint">The helper page is served by this app locally. It never sends your follows or a Twitch token to this app — the paste step is the only transfer.</p>
+          </div>
+
+          <div class="import-panel is-hidden" id="import-panel-paste" role="tabpanel" aria-labelledby="import-tab-paste" data-import-panel="paste">
+            <label class="field">
+              <span class="field-label">Paste your follows <span class="counter" id="import-parsed-count">0 usernames</span></span>
+              <textarea id="import-logins" class="textarea import-textarea" rows="9" placeholder="streamer_one&#10;streamer_two&#10;https://www.twitch.tv/streamer_three" autocomplete="off" spellcheck="false">${escapeHTML(prefill)}</textarea>
+              <span class="field-hint">Plain text, comma-separated lists, Twitch URLs, or saved HTML. Up to 2,000 unique channels. Each channel is validated with Twitch before it is added.</span>
+            </label>
+            <div class="import-paste-actions">
+              <button type="button" class="btn btn-ghost" data-action="pick-import-file">${icon("file")} Choose a file</button>
+              <input id="import-file" type="file" accept=".txt,.csv,.json,.html" class="is-hidden">
+              <span class="field-hint" id="import-file-name">.txt, .csv, .json, or saved .html</span>
+            </div>
+            <label class="field">
+              <span class="field-label">Assign destinations (optional)</span>
+              <div class="destination-checks">
+                ${webhooks.length
+                  ? webhooks.map((webhook) => `<label class="destination-check"><input type="checkbox" name="import-webhook" value="${escapeHTML(webhook.id)}" ${autoAssign ? "checked" : ""}><span>${escapeHTML(webhook.label)}</span></label>`).join("")
+                  : `<span class="field-hint">No destinations yet. Add one after importing, then route the streamers.</span>`}
+              </div>
+              <span class="field-hint">New streamers post to the selected destinations. Leave all unchecked to auto-assign when there is exactly one destination.</span>
+            </label>
+            <div id="import-results"></div>
+          </div>
+
+          <div class="import-panel is-hidden" id="import-panel-signin" role="tabpanel" aria-labelledby="import-tab-signin" data-import-panel="signin">
+            <div class="import-note">${icon("download")}<div><strong>Optional fallback</strong><span>Sign in with a Twitch device code to read the list of channels you follow directly. Tokens stay in memory and are discarded after the import.</span></div></div>
+            ${signInEnabled
+              ? `<div class="settings-actions"><button type="button" class="btn btn-primary" data-action="start-twitch-import">${icon("download")} Connect Twitch</button></div>`
+              : `<div class="warning-box">${icon("bell")}<span>Twitch sign-in is not configured in this build. Use the helper or paste a list instead.</span></div>`}
+            <p class="field-hint">The no-sign-in path never asks for Twitch credentials. Use this only if the bookmarklet or paste flow is inconvenient.</p>
+          </div>
+        </div>
+        <div class="modal-foot">
+          <span class="field-hint" id="import-foot-hint">Nothing is sent until you paste the list.</span>
+          <div class="modal-foot-right">
+            <button type="button" class="btn btn-ghost" data-action="close-modal">Cancel</button>
+            <button type="submit" class="btn btn-primary is-hidden" id="import-submit">${icon("download")} Import follows</button>
+          </div>
+        </div>
+      </form>
+    `, { narrow: true });
+
+    const field = $("#import-logins");
+    if (field) {
+      field.addEventListener("input", () => {
+        importFileSource = false;
+        updateImportParsedCount();
+      });
+    }
+    const fileInput = $("#import-file");
+    if (fileInput) {
+      fileInput.addEventListener("change", async () => {
+        const file = fileInput.files?.[0];
+        fileInput.value = "";
+        if (file) {
+          await loadImportFile(file);
+        }
+      });
+    }
+    const bookmarkletLink = $("#bookmarklet-link");
+    if (bookmarkletLink) {
+      bookmarkletLink.addEventListener("click", (event) => {
+        event.preventDefault();
+        toast("Drag this button to your bookmarks bar, then click it on Twitch.", "info");
+      });
+    }
+    applyImportTab(importModalTab);
+  }
+
+  function applyImportTab(tab) {
+    importModalTab = tab;
+    $$("[data-import-panel]").forEach((panel) => {
+      panel.classList.toggle("is-hidden", panel.dataset.importPanel !== tab);
+    });
+    $$('[data-action="import-tab"]').forEach((button) => {
+      const active = button.dataset.tab === tab;
+      button.classList.toggle("is-active", active);
+      button.setAttribute("aria-selected", active ? "true" : "false");
+    });
+    const hints = {
+      helper: "Nothing is sent until you paste the list.",
+      paste: "Already-added streamers are skipped; unresolved entries stay for a retry.",
+      signin: "Twitch tokens are discarded after the import.",
+    };
+    const hint = $("#import-foot-hint");
+    if (hint) {
+      hint.textContent = hints[tab] || "";
+    }
+    const submit = $("#import-submit");
+    if (submit) {
+      submit.classList.toggle("is-hidden", tab !== "paste");
+    }
+    if (tab === "helper") {
+      loadBookmarklet();
+    } else if (tab === "paste") {
+      updateImportParsedCount();
+      setTimeout(() => $("#import-logins")?.focus(), 40);
+    }
+  }
+
+  function compactBookmarkletSource(source) {
+    return String(source || "")
+      .replace(/\r/g, "")
+      .split("\n")
+      .map((line) => line.trim())
+      .filter((line) => line !== "")
+      .join(" ");
+  }
+
+  async function loadBookmarklet() {
+    const link = $("#bookmarklet-link");
+    if (!link) {
+      return;
+    }
+    if (!importBookmarklet && !importBookmarkletPromise) {
+      const headers = {};
+      const token = storedDashboardToken();
+      if (token) {
+        headers["X-Dashboard-Token"] = token;
+      }
+      importBookmarkletPromise = fetch("/static/follows-bookmarklet.js", { cache: "no-store", headers })
+        .then((response) => (response.ok ? response.text() : Promise.reject(new Error(`HTTP ${response.status}`))))
+        .then((text) => text.trim())
+        .catch(() => "");
+    }
+    if (importBookmarkletPromise) {
+      const source = await importBookmarkletPromise;
+      if (source) {
+        importBookmarklet = `javascript:${compactBookmarkletSource(source.replace(/^javascript:\s*/i, ""))}`;
+      } else {
+        importBookmarkletPromise = null;
+      }
+    }
+    applyBookmarklet();
+  }
+
+  function applyBookmarklet() {
+    const link = $("#bookmarklet-link");
+    const status = $("#bookmarklet-status");
+    const code = $("#bookmarklet-code");
+    if (!link) {
+      return;
+    }
+    if (importBookmarklet) {
+      link.href = importBookmarklet;
+      link.classList.remove("is-disabled");
+      link.setAttribute("aria-disabled", "false");
+      link.title = "Drag this link to your bookmarks bar, then open it on your Twitch following page.";
+      if (status) {
+        status.textContent = "Drag this button to your bookmarks bar, then click it on your Twitch following page.";
+      }
+      if (code) {
+        code.value = importBookmarklet;
+      }
+    } else {
+      link.removeAttribute("href");
+      link.classList.add("is-disabled");
+      link.setAttribute("aria-disabled", "true");
+      if (status) {
+        status.textContent = "Bookmarklet source is unavailable. Use the helper page or paste a list instead.";
+      }
+      if (code) {
+        code.value = "";
+      }
+    }
+  }
+
+  async function copyBookmarklet() {
+    const value = importBookmarklet || $("#bookmarklet-code")?.value || "";
+    if (!value) {
+      toast("Bookmarklet source is unavailable. Use the helper page or paste a list.", "error");
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(value);
+      toast("Bookmarklet code copied.", "success");
+    } catch {
+      const code = $("#bookmarklet-code");
+      if (code) {
+        code.focus();
+        code.select();
+      }
+      toast("Could not copy automatically. The code is selected — copy it manually.", "info");
+    }
+  }
+
+  async function loadImportFile(file) {
+    if (!file) {
+      return;
+    }
+    if (file.size > 2 * 1024 * 1024) {
+      toast("That file is larger than 2 MB. Paste a smaller list or trim the file.", "error");
+      return;
+    }
+    try {
+      const text = await file.text();
+      const field = $("#import-logins");
+      if (field) {
+        field.value = field.value.trim() ? `${field.value.trim()}\n${text}` : text;
+      }
+      importFileSource = true;
+      const name = $("#import-file-name");
+      if (name) {
+        name.textContent = `${file.name} loaded`;
+      }
+      updateImportParsedCount();
+      toast("File loaded into the paste box.", "success");
+    } catch {
+      toast("Could not read that file.", "error");
+    }
+  }
+
+  function renderImportResults(result) {
+    const results = $("#import-results");
+    if (!results) {
+      return;
+    }
+    const added = Number(result?.added) || 0;
+    const assigned = Number(result?.assigned) || 0;
+    const skipped = (result?.skipped || []).length;
+    const failed = (result?.failed || []).length;
+    const unresolved = bulkUnresolved(result);
+    results.innerHTML = `
+      <div class="import-results">
+        <div class="import-summary">
+          <span class="badge badge-enabled">${formatCount(added)} added</span>
+          <span class="badge">${formatCount(skipped)} skipped</span>
+          <span class="badge ${failed ? "badge-invalid" : ""}">${formatCount(failed)} failed</span>
+          ${assigned ? `<span class="meta">${formatCount(assigned)} destination assignment${assigned === 1 ? "" : "s"}</span>` : ""}
+        </div>
+        ${unresolved.length
+          ? `<div class="warning-box">${icon("bell")}<span>${formatCount(unresolved.length)} entr${unresolved.length === 1 ? "y needs" : "ies need"} attention. They are back in the paste box so you can retry just those.</span></div>
+             <div class="import-issues">${unresolved.slice(0, 12).map((item) => `<div><strong>${escapeHTML(item.login || "unknown")}</strong><span>${escapeHTML(item.reason || "Could not be added")}</span></div>`).join("")}${unresolved.length > 12 ? `<div class="meta">+${unresolved.length - 12} more</div>` : ""}</div>`
+          : `<div class="meta">Everything in this batch was handled.</div>`}
+      </div>`;
+  }
+
+  async function submitImport() {
+    const textarea = $("#import-logins");
+    const text = textarea?.value.trim() || "";
+    if (!text) {
+      textarea?.focus();
+      toast("Paste at least one Twitch username or channel URL.", "error");
+      return;
+    }
+    if (text.length > 2 * 1024 * 1024) {
+      toast("That list is larger than 2 MB. Split it into smaller imports.", "error");
+      return;
+    }
+    const webhookIDs = $$('input[name="import-webhook"]:checked').map((input) => input.value);
+    const source = importFileSource ? "file" : "paste";
+    const submit = $("#import-submit");
+    const results = $("#import-results");
+    if (submit) {
+      submit.disabled = true;
+      submit.innerHTML = '<span class="spinner"></span> Importing…';
+    }
+    if (results) {
+      results.innerHTML = `<div class="import-progress"><span class="spinner dark"></span><span>Validating channels with Twitch…</span></div>`;
+    }
+    try {
+      let response;
+      try {
+        response = await api("/api/channels/import", {
+          method: "POST",
+          body: { text, webhook_ids: webhookIDs, source },
+        });
+      } catch (error) {
+        if (error.status === 404 || error.status === 405) {
+          // Older builds only expose the bulk endpoint. Keep them working.
+          response = await api("/api/channels/bulk", { method: "POST", body: { text } });
+        } else {
+          throw error;
+        }
+      }
+      if (response.state) {
+        state = response.state;
+      }
+      const result = response.result || {};
+      const unresolved = bulkUnresolved(result);
+      if (unresolved.length) {
+        importFileSource = false;
+        if (textarea) {
+          textarea.value = unresolved.map((item) => item.login).join("\n");
+        }
+        renderImportResults(result);
+        updateImportParsedCount();
+        render();
+        toast(bulkResultMessage(result), result.added ? "info" : "error");
+      } else {
+        closeModal();
+        render();
+        toast(bulkResultMessage(result), "success");
+      }
+    } catch (error) {
+      if (results) {
+        results.innerHTML = `<div class="warning-box">${icon("bell")}<span>${escapeHTML(error.message)}</span></div>`;
+      }
+      toast(error.message, "error");
+    } finally {
+      if (submit) {
+        submit.innerHTML = `${icon("download")} Import follows`;
+        updateImportParsedCount();
+      }
+    }
+  }
+
+  function bulkResultMessage(result, verb = "Added") {
+    const added = Number(result?.added) || 0;
+    const skipped = (result?.skipped || []).length;
+    const failed = (result?.failed || []).length;
+    const parts = [`${verb} ${added} streamer${added === 1 ? "" : "s"}.`];
+    if (skipped) {
+      parts.push(`${skipped} already on your list.`);
+    }
+    if (failed) {
+      parts.push(`${failed} could not be added.`);
+    }
+    return parts.join(" ");
+  }
+
+  function bulkUnresolved(result) {
+    const skipped = (result?.skipped || []).filter((item) => item.reason !== "already added");
+    return [...skipped, ...(result?.failed || [])];
+  }
+
+  async function startTwitchImport() {
+    try {
+      const view = await api("/api/twitch/imports", { method: "POST", body: {} });
+      openModal(renderTwitchImportModal(view), { narrow: true });
+      twitchImportState = view;
+      bindTwitchImportReadyUI();
+      scheduleTwitchImportPoll();
+    } catch (error) {
+      toast(error.message, "error");
+    }
+  }
+
+  function renderTwitchImportModal(view) {
+    if (view.status === "ready") {
+      return renderTwitchImportReady(view);
+    }
+    const failed = ["expired", "denied", "error"].includes(view.status);
+    const minutes = Math.max(1, Math.round((Number(view.expires_in) || 0) / 60));
+    return `
+      <div class="modal-head">
+        <div><h2>${failed ? "Twitch sign-in" : "Connect Twitch"}</h2><p>Import the channels you already follow.</p></div>
+        <button class="modal-close" data-action="close-modal" aria-label="Close">${icon("x")}</button>
+      </div>
+      <div class="modal-body">
+        ${failed ? `
+          <div class="warning-box">${icon("bell")}<span>${escapeHTML(view.message || "Twitch sign-in did not finish.")}</span></div>
+          <p class="field-hint" style="margin-top:12px">Nothing was added to your streamer list.</p>
+        ` : `
+          <ol class="twitch-steps">
+            <li><span>Open the Twitch activation page.</span><a class="btn btn-small btn-primary" href="${escapeHTML(safeURL(view.verification_uri))}" target="_blank" rel="noopener">${icon("external")} Open Twitch</a></li>
+            <li><span>Enter this code:</span><span class="device-code">${escapeHTML(view.user_code || "")}<button type="button" class="btn btn-small btn-ghost" data-action="copy-twitch-code" data-code="${escapeHTML(view.user_code || "")}">${icon("copy")} Copy</button></span></li>
+            <li><span>Approve access. This window updates by itself.</span></li>
+          </ol>
+          <div class="twitch-wait"><span class="spinner"></span><span>${escapeHTML(view.message || "Waiting for approval…")}</span></div>
+          <p class="field-hint">Only the list of channels you follow is read. Tokens stay in memory and are discarded after the import. The code expires in about ${minutes} minute${minutes === 1 ? "" : "s"}.</p>
+        `}
+      </div>
+      <div class="modal-foot">
+        <span class="field-hint">${failed ? "No changes were made." : "You can close this window at any time."}</span>
+        <div class="modal-foot-right">
+          <button type="button" class="btn btn-ghost" data-action="close-modal">${failed ? "Close" : "Cancel"}</button>
+          ${failed ? `<button type="button" class="btn btn-primary" data-action="start-twitch-import">${icon("refresh")} Try again</button>` : ""}
+        </div>
+      </div>`;
+  }
+
+  function renderTwitchImportReady(view) {
+    const follows = view.follows || [];
+    const addable = follows.filter((follow) => !follow.added);
+    const account = view.account || {};
+    const rows = follows.map((follow) => {
+      const avatar = safeURL(follow.avatar_url || "");
+      return `
+        <label class="import-row ${follow.added ? "is-added" : ""}" data-login="${escapeHTML(follow.login)}" data-display="${escapeHTML(String(follow.display_name || follow.login).toLowerCase())}">
+          <input type="checkbox" name="twitch-follow" value="${escapeHTML(follow.login)}" ${follow.added ? "disabled" : ""}>
+          <span class="avatar avatar-sm">${avatar ? `<img src="${escapeHTML(avatar)}" alt="">` : escapeHTML(initials(follow.display_name || follow.login))}</span>
+          <span class="import-identity"><strong>${escapeHTML(follow.display_name || follow.login)}</strong><small>${escapeHTML(follow.login)}</small></span>
+          ${follow.added ? '<span class="badge badge-paused">Already added</span>' : ""}
+        </label>`;
+    }).join("");
+    return `
+      <div class="modal-head">
+        <div>
+          <h2>Choose streamers</h2>
+          <p>${follows.length} followed channel${follows.length === 1 ? "" : "s"} found for ${escapeHTML(account.display_name || account.login || "your account")}. ${addable.length} can be added${addable.length > 1000 ? "; up to 1,000 per import" : ""}.</p>
+        </div>
+        <button class="modal-close" data-action="close-modal" aria-label="Close">${icon("x")}</button>
+      </div>
+      <form id="twitch-import-form">
+        <div class="modal-body">
+          <div class="import-toolbar">
+            <input id="twitch-import-search" class="input" placeholder="Filter streamers" aria-label="Filter streamers" autocomplete="off">
+            <button type="button" class="btn btn-small btn-ghost" data-action="twitch-select" data-select="pending">Select unadded</button>
+            <button type="button" class="btn btn-small btn-ghost" data-action="twitch-select" data-select="none">Clear</button>
+          </div>
+          <div class="import-list" id="twitch-import-list">${rows}</div>
+          ${follows.length ? "" : `<div class="empty-state">${icon("users")}<strong>No follows found</strong><span>This Twitch account does not follow any channels yet.</span></div>`}
+        </div>
+        <div class="modal-foot">
+          <span class="field-hint" id="twitch-import-count">0 selected</span>
+          <div class="modal-foot-right">
+            <button type="button" class="btn btn-ghost" data-action="close-modal">Cancel</button>
+            <button type="submit" class="btn btn-primary" id="twitch-import-submit" disabled>${icon("download")} Import selected</button>
+          </div>
+        </div>
+      </form>`;
+  }
+
+  function bindTwitchImportReadyUI() {
+    if (twitchImportState?.status !== "ready") {
+      return;
+    }
+    const search = $("#twitch-import-search");
+    if (search) {
+      search.addEventListener("input", () => {
+        const term = search.value.trim().toLowerCase();
+        $$(".import-row").forEach((row) => {
+          const haystack = `${row.dataset.login || ""} ${row.dataset.display || ""}`;
+          row.classList.toggle("is-hidden", term !== "" && !haystack.includes(term));
+        });
+      });
+    }
+    const list = $("#twitch-import-list");
+    if (list) {
+      list.addEventListener("change", updateTwitchImportSelection);
+    }
+    updateTwitchImportSelection();
+  }
+
+  function updateTwitchImportSelection() {
+    const checked = $$('input[name="twitch-follow"]:checked').length;
+    const count = $("#twitch-import-count");
+    if (count) {
+      count.textContent = `${checked} selected`;
+    }
+    const submit = $("#twitch-import-submit");
+    if (submit) {
+      submit.disabled = checked === 0;
+    }
+  }
+
+  function setTwitchImportSelection(mode) {
+    const inputs = $$('input[name="twitch-follow"]').filter((input) => !input.disabled);
+    const limit = 1000;
+    inputs.forEach((input, index) => {
+      input.checked = mode === "pending" && index < limit;
+    });
+    if (mode === "pending" && inputs.length > limit) {
+      toast(`Selected the first ${limit}. Import them, then connect Twitch again for the rest.`, "info");
+    }
+    updateTwitchImportSelection();
+  }
+
+  function scheduleTwitchImportPoll(delay) {
+    clearTimeout(twitchImportTimer);
+    if (!twitchImportState?.id) {
+      return;
+    }
+    const seconds = Math.max(3, Number(twitchImportState.interval) || 5);
+    twitchImportTimer = setTimeout(pollTwitchImport, delay ?? seconds * 1000);
+  }
+
+  async function pollTwitchImport() {
+    if (!twitchImportState?.id) {
+      return;
+    }
+    const root = $("#modal-root");
+    if (!root || !root.innerHTML) {
+      return;
+    }
+    const id = twitchImportState.id;
+    try {
+      const view = await api(`/api/twitch/imports/${id}`);
+      if (!twitchImportState || twitchImportState.id !== id) {
+        return;
+      }
+      twitchImportState = view;
+      const modal = $(".modal", root);
+      if (modal) {
+        modal.innerHTML = renderTwitchImportModal(view);
+      }
+      bindTwitchImportReadyUI();
+      if (view.status === "pending") {
+        scheduleTwitchImportPoll();
+      }
+    } catch (error) {
+      toast(error.message, "error");
+    }
+  }
+
 function openSampleModal(channelId) {
     const channel = channelById(channelId);
     if (!channel) {
@@ -2130,6 +3960,104 @@ function openSampleModal(channelId) {
       case "go-add-streamer":
         switchView("streamers", true);
         break;
+      case "go-history":
+        switchView("history");
+        break;
+      case "go-routing": {
+        const routedChannel = (state?.config?.channels || [])[0];
+        if (!routedChannel) {
+          toast("Add a streamer first, then choose a destination.", "info");
+          switchView("streamers", true);
+          break;
+        }
+        streamerView = "matrix";
+        switchView("streamers");
+        setTimeout(() => {
+          $("#streamer-list-section")?.scrollIntoView({ behavior: "smooth", block: "start" });
+        }, 80);
+        break;
+      }
+      case "toggle-select-mode":
+        streamerSelectMode = !streamerSelectMode;
+        if (!streamerSelectMode) {
+          selectedStreamerIds.clear();
+        }
+        syncStreamerToolbarState();
+        renderStreamerResults();
+        break;
+      case "toggle-streamer-view":
+        streamerView = streamerView === "matrix" ? "cards" : "matrix";
+        syncStreamerToolbarState();
+        renderStreamerResults();
+        break;
+      case "select-visible-streamers":
+        selectVisibleStreamers();
+        break;
+      case "clear-streamer-selection":
+        clearStreamerSelection();
+        break;
+      case "reset-streamer-filters":
+        resetStreamerFilters();
+        break;
+      case "bulk-enable":
+        await runBulkAction("enable");
+        break;
+      case "bulk-disable":
+        await runBulkAction("disable");
+        break;
+      case "bulk-delete":
+        await runBulkAction("delete");
+        break;
+      case "bulk-assign":
+        openBulkDestinationModal("assign");
+        break;
+      case "bulk-unassign":
+        openBulkDestinationModal("unassign");
+        break;
+      case "go-test-webhook": {
+        const testDestinations = state?.config?.webhooks || [];
+        if (!testDestinations.length) {
+          openWebhookModal();
+          break;
+        }
+        switchView("destinations");
+        setTimeout(() => {
+          $(".destination-card")?.scrollIntoView({ behavior: "smooth", block: "center" });
+        }, 80);
+        break;
+      }
+      case "dismiss-onboarding":
+        dismissOnboarding();
+        break;
+      case "open-import":
+        openImportModal("helper");
+        break;
+      case "open-bulk-add":
+        openImportModal("paste");
+        break;
+      case "import-tab":
+        applyImportTab(actionElement.dataset.tab || "helper");
+        break;
+      case "copy-bookmarklet":
+        await copyBookmarklet();
+        break;
+      case "pick-import-file":
+        $("#import-file")?.click();
+        break;
+      case "start-twitch-import":
+        await startTwitchImport();
+        break;
+      case "copy-twitch-code":
+        try {
+          await navigator.clipboard.writeText(actionElement.dataset.code || "");
+          toast("Code copied.", "success");
+        } catch {
+          toast("Could not copy the code. Select it instead.", "error");
+        }
+        break;
+      case "twitch-select":
+        setTwitchImportSelection(actionElement.dataset.select);
+        break;
       case "add-destination":
         openWebhookModal();
         break;
@@ -2270,6 +4198,10 @@ function openSampleModal(channelId) {
             state.update = result;
             render();
           }
+          if (installJobActive(result.install_job)) {
+            updateInstallStartedAt = Date.now();
+            scheduleUpdateInstallPoll(700);
+          }
           if (result.error) {
             toast(result.error, "error");
           } else if (result.update_available) {
@@ -2282,6 +4214,25 @@ function openSampleModal(channelId) {
           actionElement.disabled = false;
           actionElement.innerHTML = `${icon("refresh")} Check now`;
         }
+        break;
+      case "install-update":
+        await installUpdate();
+        break;
+      case "copy-diagnostics":
+        await copyDiagnostics();
+        break;
+      case "download-diagnostics":
+        await downloadDiagnostics();
+        break;
+      case "refresh-history":
+        refreshHistory();
+        break;
+      case "clear-history":
+        await clearHistory();
+        break;
+      case "reset-history-filters":
+        historyFilters = { kind: "", level: "", channel_id: "", search: "" };
+        refreshHistory();
         break;
       case "open-data-folder":
         try {
@@ -2335,6 +4286,30 @@ function openSampleModal(channelId) {
 
   async function handleChange(event) {
     const target = event.target;
+    if (target.id === "streamer-status") {
+      streamerStatus = target.value;
+      renderStreamerResults();
+      return;
+    }
+    if (target.id === "streamer-sort") {
+      streamerSort = target.value;
+      renderStreamerResults();
+      return;
+    }
+    if (target.matches('[data-action="toggle-select-channel"]')) {
+      toggleStreamerSelection(target);
+      return;
+    }
+    if (target.matches('[data-action="toggle-matrix-cell"]')) {
+      await toggleMatrixCell(target);
+      return;
+    }
+    if (target.id === "history-kind" || target.id === "history-level" || target.id === "history-channel") {
+      const field = { "history-kind": "kind", "history-level": "level", "history-channel": "channel_id" }[target.id];
+      historyFilters[field] = target.value;
+      refreshHistory();
+      return;
+    }
     if (target.id === "template-import") {
       await importTemplate(target.files?.[0]);
       target.value = "";
@@ -2373,6 +4348,42 @@ function openSampleModal(channelId) {
     }
   }
 
+  function handleInput(event) {
+    const target = event.target;
+    if (target.id === "streamer-search") {
+      streamerSearch = target.value;
+      clearTimeout(streamerSearchTimer);
+      streamerSearchTimer = setTimeout(() => {
+        if (currentView === "streamers") {
+          renderStreamerResults();
+        }
+      }, 140);
+      return;
+    }
+    if (target.id !== "history-search") {
+      return;
+    }
+    const hadFocus = document.activeElement === target;
+    const caret = target.selectionStart ?? target.value.length;
+    historyFilters.search = target.value;
+    clearTimeout(historySearchTimer);
+    historySearchTimer = setTimeout(async () => {
+      if (currentView !== "history") {
+        return;
+      }
+      historyLoaded = false;
+      await loadHistory();
+      if (hadFocus) {
+        const field = $("#history-search");
+        if (field) {
+          field.focus();
+          const position = Math.min(caret, field.value.length);
+          field.setSelectionRange(position, position);
+        }
+      }
+    }, 300);
+  }
+
   async function handleSubmit(event) {
     if (event.target.id === "discord-id-form") {
       event.preventDefault();
@@ -2394,6 +4405,52 @@ function openSampleModal(channelId) {
         toast(error.message, "error");
         button.disabled = false;
         button.innerHTML = `${icon("check")} Save ping`;
+      }
+      return;
+    }
+
+    if (event.target.id === "import-form") {
+      event.preventDefault();
+      if (importModalTab !== "paste") {
+        return;
+      }
+      await submitImport();
+      return;
+    }
+
+    if (event.target.id === "twitch-import-form") {
+      event.preventDefault();
+      const importID = twitchImportState?.id;
+      const logins = $$('input[name="twitch-follow"]:checked').map((input) => input.value);
+      if (!importID) {
+        toast("This Twitch import expired. Start again.", "error");
+        return;
+      }
+      if (!logins.length) {
+        toast("Select at least one streamer.", "error");
+        return;
+      }
+      const button = $("#twitch-import-submit");
+      if (button) {
+        button.disabled = true;
+        button.innerHTML = '<span class="spinner"></span> Importing…';
+      }
+      try {
+        const response = await api(`/api/twitch/imports/${importID}/import`, {
+          method: "POST",
+          body: { logins },
+        });
+        twitchImportState = null;
+        closeModal();
+        state = response.state || state;
+        render();
+        toast(bulkResultMessage(response.result, "Imported"), "success");
+      } catch (error) {
+        toast(error.message, "error");
+        if (button) {
+          button.disabled = false;
+          button.innerHTML = `${icon("download")} Import selected`;
+        }
       }
       return;
     }
@@ -2484,6 +4541,32 @@ function openSampleModal(channelId) {
       } finally {
         button.disabled = false;
         button.innerHTML = `${icon("check")} Save settings`;
+      }
+      return;
+    }
+
+    if (event.target.id === "bulk-route-form") {
+      event.preventDefault();
+      const form = event.target;
+      const action = form.dataset.bulkAction === "unassign" ? "unassign" : "assign";
+      const ids = $$('input[name="bulk-webhook"]:checked', form).map((input) => input.value);
+      if (!ids.length) {
+        toast("Choose at least one destination.", "error");
+        return;
+      }
+      const button = $("button[type=submit]", form);
+      const label = button ? button.innerHTML : "";
+      if (button) {
+        button.disabled = true;
+        button.innerHTML = '<span class="spinner"></span> Saving…';
+      }
+      try {
+        await runBulkAction(action, ids);
+      } finally {
+        if (button?.isConnected) {
+          button.disabled = false;
+          button.innerHTML = label;
+        }
       }
       return;
     }
@@ -2616,18 +4699,20 @@ function openSampleModal(channelId) {
     }
     document.addEventListener("click", handleGlobalClick);
     document.addEventListener("change", handleChange);
+    document.addEventListener("input", handleInput);
     document.addEventListener("submit", handleSubmit);
     $("#theme-toggle").addEventListener("click", toggleTheme);
     $$(".nav-item").forEach((item) => {
       item.addEventListener("click", () => switchView(item.dataset.view));
     });
+    const knownViews = ["overview", "streamers", "destinations", "history", "settings"];
     const hashView = location.hash.replace("#", "");
-    if (["overview", "streamers", "destinations", "settings"].includes(hashView)) {
+    if (knownViews.includes(hashView)) {
       currentView = hashView;
     }
     window.addEventListener("hashchange", () => {
       const view = location.hash.replace("#", "");
-      if (["overview", "streamers", "destinations", "settings"].includes(view)) {
+      if (knownViews.includes(view)) {
         switchView(view);
       }
     });

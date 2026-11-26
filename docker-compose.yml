@@ -19,6 +19,8 @@ services:
     environment:
       # Quiet hours use this timezone.
       TZ: "${TZ:-UTC}"
+      # Optional public Twitch client ID for the device-code follows fallback.
+      TWITCH_LIVE_CLIENT_ID: "${TWITCH_LIVE_CLIENT_ID:-}"
     volumes:
       - twitch-live-data:/data
     security_opt:

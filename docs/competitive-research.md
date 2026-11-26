@@ -1,7 +1,7 @@
 # Competitive research: Twitch → Discord alerts
 
-- **Research date:** 2026-11-15
-- **Product version reviewed:** 2.4.0
+- **Research date:** 2026-11-26
+- **Product version reviewed:** 2.5.0
 - **Scope:** Twitch live alerts for Discord communities, not general-purpose Discord bots.
 
 ## Method
@@ -74,6 +74,11 @@ generic bot; **No** = not a core feature.
 
 - **No bot, OAuth flow, Twitch API registration, or cloud account.** This is a
   meaningfully different onboarding story.
+- **No-login follows import at scale.** A browser-session helper or pasted list
+  imports up to 2,000 channels with batched validation; no Twitch token reaches
+  the app and no backend is involved.
+- **Bulk routing.** Search, multi-select actions, and a streamer × destination
+  matrix make hundreds of imported streamers manageable.
 - **Multi-destination routing.** Users can send one streamer to several labelled
   Discord channels/servers, and one destination can receive many streamers.
 - **Message control with live preview.** Per-destination content, embed styling,
@@ -182,7 +187,13 @@ A public utility needs lower-friction installation and updates:
   optional through repository secrets.
 - ~~Linux AppImage/deb.~~ Delivered in 2.4.0.
 - ~~Auto-update check from GitHub releases.~~ Delivered in 2.4.0 as a status check
-  plus download link; silent self-replacement waits for signed artifacts.
+  plus download link. **2.5.0** adds a release manifest, SHA-256 verification,
+  platform-aware in-place install/restart, rollback, and optional Ed25519
+  manifest signing.
+- ~~Import a full follows list without a Twitch token or backend.~~ **2.5.0**
+  adds a local browser bookmarklet/helper, paste/file import up to 2,000
+  channels, batched validation, and optional destination assignment. The
+  device-code sign-in remains an optional fallback.
 - ~~Encrypt webhook URLs with DPAPI/Keychain/libsecret.~~ Delivered in 2.3.0.
 - ~~Optional local dashboard PIN/token for local-network access.~~ Delivered in
   2.3.0.
